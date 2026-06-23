@@ -88,6 +88,11 @@ static void scalar_text(const char *sql, char *out, size_t out_size) {
 
 static void reset_schema(void) {
     exec_sql("SET FOREIGN_KEY_CHECKS = 0");
+    exec_sql("DROP TABLE IF EXISTS group_message_deliveries");
+    exec_sql("DROP TABLE IF EXISTS group_messages");
+    exec_sql("DROP TABLE IF EXISTS group_members");
+    exec_sql("DROP TABLE IF EXISTS chat_groups");
+    exec_sql("DROP TABLE IF EXISTS friend_blocks");
     exec_sql("DROP TABLE IF EXISTS friends");
     exec_sql("DROP TABLE IF EXISTS messages");
     exec_sql("DROP TABLE IF EXISTS users");
@@ -139,6 +144,15 @@ static void test_registration_and_friend_constraints(void) {
     assert(add_friend(alice, bob) == -1);
     assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
                        "(user_id = 1 AND friend_id = 2) OR (user_id = 2 AND friend_id = 1)") == 2);
+
+    assert(block_user(bob, alice) == 0);
+    assert(has_block_between(alice, bob) == 1);
+    assert(can_send_private_message(alice, bob) == 0);
+    assert(block_user(bob, alice) == -1);
+    assert(scalar_long("SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = 2 AND blocked_id = 1") == 1);
+    assert(unblock_user(bob, alice) == 0);
+    assert(has_block_between(alice, bob) == 0);
+    assert(can_send_private_message(alice, bob) == 1);
 }
 
 static void test_transaction_rollback_for_half_friendship(void) {
@@ -178,6 +192,75 @@ static void test_messages_timestamp_and_cascade(void) {
     exec_sql("DELETE FROM users WHERE id = 1");
     assert(scalar_long("SELECT COUNT(*) FROM messages WHERE sender_id = 1 OR receiver_id = 1") == 0);
     assert(scalar_long("SELECT COUNT(*) FROM friends WHERE user_id = 1 OR friend_id = 1") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM chat_groups WHERE owner_id = 1") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM group_messages WHERE group_id = 1") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM group_message_deliveries") == 0);
+}
+
+static void test_group_chat_and_offline_consistency(void) {
+    int message_id = -1;
+    int dana = register_user("dana_test", "pw", "Dana");
+    int group_id;
+    char initial_members[64];
+    char group_offline_record[64];
+    char groups[BUFFER_SIZE] = "";
+    char members[BUFFER_SIZE] = "";
+    char messages[BUFFER_SIZE] = "";
+    char offline[BUFFER_SIZE] = "";
+
+    assert(dana > 0);
+
+    snprintf(initial_members, sizeof(initial_members), "2,2,%ld",
+             scalar_long("SELECT id FROM users WHERE username='quoted_user'' OR ''1''=''1'"));
+    group_id = create_group(1, "Study Group", initial_members);
+    assert(group_id > 0);
+    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 3);
+    assert(create_group(1, "Unsafe:Group", "2") == -1);
+    assert(create_group(1, "Bad Members", "2,bad") == -1);
+    assert(create_group(1, "Missing Member", "999999") == -1);
+    assert(scalar_long("SELECT COUNT(*) FROM chat_groups WHERE name = 'Bad Members'") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM chat_groups WHERE name = 'Missing Member'") == 0);
+
+    get_groups(1, groups, sizeof(groups));
+    assert(strstr(groups, "Study Group") != NULL);
+    assert(is_group_member(1, group_id) == 1);
+    assert(is_group_member(dana, group_id) == 0);
+
+    assert(get_group_members(1, group_id, members, sizeof(members)) == 0);
+    assert(strstr(members, "alice_test:Alice;") != NULL);
+    assert(strstr(members, "bob_test:Bob;") != NULL);
+    assert(get_group_members(dana, group_id, members, sizeof(members)) == -1);
+
+    assert(add_group_member(1, group_id, 2) == -1);
+    assert(add_group_member(dana, group_id, 1) == -1);
+    assert(add_group_member(1, group_id, dana) == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 4);
+
+    assert(save_group_message(dana, group_id, "hello group", &message_id) == 0);
+    assert(message_id > 0);
+    assert(scalar_long("SELECT COUNT(*) FROM group_messages WHERE group_id = 1") == 1);
+    assert(scalar_long("SELECT COUNT(*) FROM group_message_deliveries WHERE message_id = 1") == 4);
+    assert(save_group_message(999999, group_id, "not a member", NULL) == -1);
+    assert(save_group_message(dana, group_id, "bad:delimiter", NULL) == -1);
+
+    get_offline_messages(1, offline, sizeof(offline));
+    snprintf(group_offline_record, sizeof(group_offline_record), "GROUP:%d:1;", group_id);
+    assert(strstr(offline, group_offline_record) != NULL);
+    assert(get_group_messages(1, group_id, messages, sizeof(messages)) == 0);
+    assert(strstr(messages, "hello group") != NULL);
+    assert(strstr(messages, "Dana;") != NULL);
+    offline[0] = '\0';
+    get_offline_messages(1, offline, sizeof(offline));
+    assert(strstr(offline, group_offline_record) == NULL);
+
+    assert(save_message(1, 2, "offline private") == 0);
+    get_offline_messages(2, offline, sizeof(offline));
+    assert(strstr(offline, "PRIVATE:1:1;") != NULL);
+    get_messages(2, 1, messages, sizeof(messages));
+    offline[0] = '\0';
+    get_offline_messages(2, offline, sizeof(offline));
+    assert(strstr(offline, "PRIVATE:1:1;") == NULL);
+
 }
 
 int main(void) {
@@ -220,6 +303,7 @@ int main(void) {
 
     test_registration_and_friend_constraints();
     test_transaction_rollback_for_half_friendship();
+    test_group_chat_and_offline_consistency();
     test_messages_timestamp_and_cascade();
 
     reset_schema();

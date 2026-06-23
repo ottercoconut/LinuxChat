@@ -28,6 +28,25 @@ pthread_mutex_t clients_mutex;
 
 int client_count = 0;
 
+int is_user_online(int user_id) {
+    int online = 0;
+
+    if (user_id <= 0) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i].user_id == user_id) {
+            online = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+
+    return online;
+}
+
 int is_protocol_safe_text(const char *text, int allow_comma) {
     if (text == NULL || text[0] == '\0') {
         return 0;
@@ -108,16 +127,17 @@ void create_tables(void) {
                          "password VARCHAR(100) NOT NULL,"
                          "nickname VARCHAR(50) NOT NULL,"
                          "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)";
-    
+
     char *create_messages = "CREATE TABLE IF NOT EXISTS messages ("
                             "id INT AUTO_INCREMENT PRIMARY KEY,"
                             "sender_id INT NOT NULL,"
                             "receiver_id INT NOT NULL,"
                             "content TEXT NOT NULL,"
+                            "delivered TINYINT(1) DEFAULT 0,"
                             "timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
                             "FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE,"
                             "FOREIGN KEY(receiver_id) REFERENCES users(id) ON DELETE CASCADE)";
-    
+
     char *create_friends = "CREATE TABLE IF NOT EXISTS friends ("
                            "id INT AUTO_INCREMENT PRIMARY KEY,"
                            "user_id INT NOT NULL,"
@@ -127,7 +147,51 @@ void create_tables(void) {
                            "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,"
                            "FOREIGN KEY(friend_id) REFERENCES users(id) ON DELETE CASCADE,"
                            "UNIQUE KEY unique_friend (user_id, friend_id))";
-    
+
+    char *create_friend_blocks = "CREATE TABLE IF NOT EXISTS friend_blocks ("
+                                 "id INT AUTO_INCREMENT PRIMARY KEY,"
+                                 "blocker_id INT NOT NULL,"
+                                 "blocked_id INT NOT NULL,"
+                                 "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+                                 "FOREIGN KEY(blocker_id) REFERENCES users(id) ON DELETE CASCADE,"
+                                 "FOREIGN KEY(blocked_id) REFERENCES users(id) ON DELETE CASCADE,"
+                                 "UNIQUE KEY unique_block (blocker_id, blocked_id))";
+
+    char *create_groups = "CREATE TABLE IF NOT EXISTS chat_groups ("
+                          "id INT AUTO_INCREMENT PRIMARY KEY,"
+                          "name VARCHAR(80) NOT NULL,"
+                          "owner_id INT NOT NULL,"
+                          "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+                          "FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE)";
+
+    char *create_group_members = "CREATE TABLE IF NOT EXISTS group_members ("
+                                 "id INT AUTO_INCREMENT PRIMARY KEY,"
+                                 "group_id INT NOT NULL,"
+                                 "user_id INT NOT NULL,"
+                                 "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+                                 "FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,"
+                                 "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,"
+                                 "UNIQUE KEY unique_group_member (group_id, user_id))";
+
+    char *create_group_messages = "CREATE TABLE IF NOT EXISTS group_messages ("
+                                  "id INT AUTO_INCREMENT PRIMARY KEY,"
+                                  "group_id INT NOT NULL,"
+                                  "sender_id INT NOT NULL,"
+                                  "content TEXT NOT NULL,"
+                                  "timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+                                  "FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,"
+                                  "FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE)";
+
+    char *create_group_message_deliveries = "CREATE TABLE IF NOT EXISTS group_message_deliveries ("
+                                            "id INT AUTO_INCREMENT PRIMARY KEY,"
+                                            "message_id INT NOT NULL,"
+                                            "user_id INT NOT NULL,"
+                                            "delivered TINYINT(1) DEFAULT 0,"
+                                            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+                                            "FOREIGN KEY(message_id) REFERENCES group_messages(id) ON DELETE CASCADE,"
+                                            "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,"
+                                            "UNIQUE KEY unique_group_delivery (message_id, user_id))";
+
     pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, create_users) != 0) {
         fprintf(stderr, "创建users表失败: %s\n", mysql_error(db_conn));
@@ -137,6 +201,25 @@ void create_tables(void) {
     }
     if (mysql_query(db_conn, create_friends) != 0) {
         fprintf(stderr, "创建friends表失败: %s\n", mysql_error(db_conn));
+    }
+    if (mysql_query(db_conn, "ALTER TABLE messages ADD COLUMN delivered TINYINT(1) DEFAULT 0") != 0 &&
+        mysql_errno(db_conn) != 1060) {
+        fprintf(stderr, "扩展messages表失败: %s\n", mysql_error(db_conn));
+    }
+    if (mysql_query(db_conn, create_friend_blocks) != 0) {
+        fprintf(stderr, "创建friend_blocks表失败: %s\n", mysql_error(db_conn));
+    }
+    if (mysql_query(db_conn, create_groups) != 0) {
+        fprintf(stderr, "创建chat_groups表失败: %s\n", mysql_error(db_conn));
+    }
+    if (mysql_query(db_conn, create_group_members) != 0) {
+        fprintf(stderr, "创建group_members表失败: %s\n", mysql_error(db_conn));
+    }
+    if (mysql_query(db_conn, create_group_messages) != 0) {
+        fprintf(stderr, "创建group_messages表失败: %s\n", mysql_error(db_conn));
+    }
+    if (mysql_query(db_conn, create_group_message_deliveries) != 0) {
+        fprintf(stderr, "创建group_message_deliveries表失败: %s\n", mysql_error(db_conn));
     }
     pthread_mutex_unlock(&db_mutex);
     printf("数据库表初始化完成\n");
@@ -262,7 +345,7 @@ int add_friend(int user_id, int friend_id) {
 
     snprintf(query, sizeof(query), "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
              user_id, friend_id);
-    
+
     pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, "START TRANSACTION") != 0) {
         fprintf(stderr, "开始好友事务失败: %s\n", mysql_error(db_conn));
@@ -276,10 +359,10 @@ int add_friend(int user_id, int friend_id) {
         pthread_mutex_unlock(&db_mutex);
         return -1;
     }
-    
+
     snprintf(query, sizeof(query), "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
              friend_id, user_id);
-    
+
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "添加好友失败: %s\n", mysql_error(db_conn));
         mysql_query(db_conn, "ROLLBACK");
@@ -317,13 +400,13 @@ void get_friends(int user_id, char *result, size_t result_size) {
         pthread_mutex_unlock(&db_mutex);
         return;
     }
-    
+
     MYSQL_RES *res = mysql_store_result(db_conn);
     if (res == NULL) {
         pthread_mutex_unlock(&db_mutex);
         return;
     }
-    
+
     MYSQL_ROW row;
     while ((row = mysql_fetch_row(res)) != NULL) {
         if (append_protocol_record(result, result_size, row[0], row[1], row[2]) != 0) {
@@ -367,6 +450,525 @@ int are_friends(int user_id, int friend_id) {
     return result;
 }
 
+int has_block_between(int user_id, int other_id) {
+    const char *statement =
+        "SELECT COUNT(*) FROM friend_blocks "
+        "WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[4];
+    MYSQL_BIND result_bind[1];
+    int bound_user_id = user_id;
+    int bound_other_id = other_id;
+    long long count = 0;
+    int blocked = 0;
+
+    if (user_id <= 0 || other_id <= 0 || user_id == other_id) {
+        return 0;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_user_id);
+    bind_int_param(&params[1], &bound_other_id);
+    bind_int_param(&params[2], &bound_other_id);
+    bind_int_param(&params[3], &bound_user_id);
+
+    memset(result_bind, 0, sizeof(result_bind));
+    result_bind[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result_bind[0].buffer = &count;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化屏蔽查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, result_bind) != 0) {
+        fprintf(stderr, "屏蔽关系查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_fetch(stmt) == 0 && count > 0) {
+        blocked = 1;
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return blocked;
+}
+
+int can_send_private_message(int sender_id, int receiver_id) {
+    return are_friends(sender_id, receiver_id) && !has_block_between(sender_id, receiver_id);
+}
+
+int block_user(int blocker_id, int blocked_id) {
+    const char *statement =
+        "INSERT INTO friend_blocks (blocker_id, blocked_id) VALUES (?, ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[2];
+    int bound_blocker_id = blocker_id;
+    int bound_blocked_id = blocked_id;
+    int status = -1;
+
+    if (blocker_id <= 0 || blocked_id <= 0 || blocker_id == blocked_id) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_blocker_id);
+    bind_int_param(&params[1], &bound_blocked_id);
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化屏蔽语句失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "屏蔽用户失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    status = 0;
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return status;
+}
+
+int unblock_user(int blocker_id, int blocked_id) {
+    const char *statement =
+        "DELETE FROM friend_blocks WHERE blocker_id = ? AND blocked_id = ?";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[2];
+    int bound_blocker_id = blocker_id;
+    int bound_blocked_id = blocked_id;
+    int status = -1;
+
+    if (blocker_id <= 0 || blocked_id <= 0 || blocker_id == blocked_id) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_blocker_id);
+    bind_int_param(&params[1], &bound_blocked_id);
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化解除屏蔽语句失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "解除屏蔽失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    status = mysql_stmt_affected_rows(stmt) > 0 ? 0 : -1;
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return status;
+}
+
+int is_group_member(int user_id, int group_id) {
+    const char *statement =
+        "SELECT COUNT(*) FROM group_members WHERE user_id = ? AND group_id = ?";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[2];
+    MYSQL_BIND result_bind[1];
+    int bound_user_id = user_id;
+    int bound_group_id = group_id;
+    long long count = 0;
+    int member = 0;
+
+    if (user_id <= 0 || group_id <= 0) {
+        return 0;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_user_id);
+    bind_int_param(&params[1], &bound_group_id);
+
+    memset(result_bind, 0, sizeof(result_bind));
+    result_bind[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result_bind[0].buffer = &count;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化群成员查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, result_bind) != 0) {
+        fprintf(stderr, "群成员查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_fetch(stmt) == 0 && count > 0) {
+        member = 1;
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return member;
+}
+
+static int insert_group_member_locked(int group_id, int user_id, int ignore_duplicate) {
+    const char *insert_statement =
+        "INSERT INTO group_members (group_id, user_id) VALUES (?, ?)";
+    const char *insert_ignore_statement =
+        "INSERT IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[2];
+    int bound_group_id = group_id;
+    int bound_user_id = user_id;
+    int status = -1;
+
+    if (group_id <= 0 || user_id <= 0) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_group_id);
+    bind_int_param(&params[1], &bound_user_id);
+
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化群成员写入失败: %s\n", mysql_error(db_conn));
+        return -1;
+    }
+
+    if (mysql_stmt_prepare(stmt,
+                           ignore_duplicate ? insert_ignore_statement : insert_statement,
+                           strlen(ignore_duplicate ? insert_ignore_statement : insert_statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "写入群成员失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    status = (ignore_duplicate || mysql_stmt_affected_rows(stmt) > 0) ? 0 : -1;
+
+cleanup:
+    mysql_stmt_close(stmt);
+    return status;
+}
+
+static int user_exists_locked(int user_id) {
+    const char *statement = "SELECT COUNT(*) FROM users WHERE id = ?";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[1];
+    int bound_user_id = user_id;
+    long long count = 0;
+    int exists = 0;
+
+    if (user_id <= 0) {
+        return 0;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_user_id);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    results[0].buffer = &count;
+
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化用户存在性查询失败: %s\n", mysql_error(db_conn));
+        return 0;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "用户存在性查询失败: %s\n", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return 0;
+    }
+
+    if (mysql_stmt_fetch(stmt) == 0 && count > 0) {
+        exists = 1;
+    }
+
+    mysql_stmt_close(stmt);
+    return exists;
+}
+
+int add_group_member(int requester_id, int group_id, int new_member_id) {
+    int status = -1;
+
+    if (requester_id <= 0 || group_id <= 0 || new_member_id <= 0 ||
+        !is_group_member(requester_id, group_id)) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&db_mutex);
+    if (user_exists_locked(new_member_id)) {
+        status = insert_group_member_locked(group_id, new_member_id, 0);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return status;
+}
+
+int create_group(int owner_id, const char *group_name, const char *member_csv) {
+    const char *statement =
+        "INSERT INTO chat_groups (name, owner_id) VALUES (?, ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[2];
+    unsigned long name_length;
+    int bound_owner_id = owner_id;
+    int group_id = -1;
+    char members[BUFFER_SIZE];
+
+    if (owner_id <= 0 ||
+        !is_protocol_safe_text(group_name, 0) ||
+        strlen(group_name) >= 80) {
+        return -1;
+    }
+
+    if (member_csv != NULL && member_csv[0] != '\0' && !is_protocol_safe_text(member_csv, 1)) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_string_param(&params[0], group_name, &name_length);
+    bind_int_param(&params[1], &bound_owner_id);
+
+    pthread_mutex_lock(&db_mutex);
+    if (mysql_query(db_conn, "START TRANSACTION") != 0) {
+        fprintf(stderr, "开始创建群聊事务失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化创建群聊语句失败: %s\n", mysql_error(db_conn));
+        mysql_query(db_conn, "ROLLBACK");
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "创建群聊失败: %s\n", mysql_stmt_error(stmt));
+        mysql_query(db_conn, "ROLLBACK");
+        goto cleanup;
+    }
+
+    group_id = (int)mysql_insert_id(db_conn);
+    if (insert_group_member_locked(group_id, owner_id, 1) != 0) {
+        mysql_query(db_conn, "ROLLBACK");
+        group_id = -1;
+        goto cleanup;
+    }
+
+    if (member_csv != NULL && member_csv[0] != '\0') {
+        snprintf(members, sizeof(members), "%s", member_csv);
+        char *saveptr = NULL;
+        char *token = strtok_r(members, ",", &saveptr);
+        while (token != NULL) {
+            char *endptr = NULL;
+            long parsed_id = strtol(token, &endptr, 10);
+            if (token[0] == '\0' || *endptr != '\0' || parsed_id <= 0 || parsed_id > 2147483647L ||
+                !user_exists_locked((int)parsed_id) ||
+                insert_group_member_locked(group_id, (int)parsed_id, 1) != 0) {
+                mysql_query(db_conn, "ROLLBACK");
+                group_id = -1;
+                goto cleanup;
+            }
+            token = strtok_r(NULL, ",", &saveptr);
+        }
+    }
+
+    if (mysql_query(db_conn, "COMMIT") != 0) {
+        fprintf(stderr, "提交创建群聊事务失败: %s\n", mysql_error(db_conn));
+        mysql_query(db_conn, "ROLLBACK");
+        group_id = -1;
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return group_id;
+}
+
+void get_groups(int user_id, char *result, size_t result_size) {
+    const char *statement =
+        "SELECT g.id, g.name, u.nickname FROM chat_groups g "
+        "JOIN group_members gm ON g.id = gm.group_id "
+        "JOIN users u ON g.owner_id = u.id "
+        "WHERE gm.user_id = ? ORDER BY g.created_at, g.id";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[3];
+    int bound_user_id = user_id;
+    int group_id = 0;
+    char group_name[80] = "";
+    char owner_nickname[50] = "";
+    unsigned long group_name_length = 0;
+    unsigned long owner_nickname_length = 0;
+    char id_text[16];
+
+    if (result_size == 0) {
+        return;
+    }
+    result[0] = '\0';
+    if (user_id <= 0) {
+        return;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_user_id);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_LONG;
+    results[0].buffer = &group_id;
+    results[1].buffer_type = MYSQL_TYPE_STRING;
+    results[1].buffer = group_name;
+    results[1].buffer_length = sizeof(group_name) - 1;
+    results[1].length = &group_name_length;
+    results[2].buffer_type = MYSQL_TYPE_STRING;
+    results[2].buffer = owner_nickname;
+    results[2].buffer_length = sizeof(owner_nickname) - 1;
+    results[2].length = &owner_nickname_length;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化群列表查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "群列表查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    while (mysql_stmt_fetch(stmt) == 0) {
+        group_name[group_name_length < sizeof(group_name) ? group_name_length : sizeof(group_name) - 1] = '\0';
+        owner_nickname[owner_nickname_length < sizeof(owner_nickname) ? owner_nickname_length : sizeof(owner_nickname) - 1] = '\0';
+        snprintf(id_text, sizeof(id_text), "%d", group_id);
+        if (append_protocol_record(result, result_size, id_text, group_name, owner_nickname) != 0) {
+            fprintf(stderr, "群列表结果过长，已截断\n");
+            break;
+        }
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+}
+
+int get_group_members(int requester_id, int group_id, char *result, size_t result_size) {
+    const char *statement =
+        "SELECT u.id, u.username, u.nickname FROM group_members gm "
+        "JOIN users u ON gm.user_id = u.id "
+        "WHERE gm.group_id = ? ORDER BY gm.created_at, gm.id";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[3];
+    int bound_group_id = group_id;
+    int member_id = 0;
+    char username[50] = "";
+    char nickname[50] = "";
+    unsigned long username_length = 0;
+    unsigned long nickname_length = 0;
+    char id_text[16];
+    int status = -1;
+
+    if (result_size == 0) {
+        return -1;
+    }
+    result[0] = '\0';
+    if (!is_group_member(requester_id, group_id)) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_group_id);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_LONG;
+    results[0].buffer = &member_id;
+    results[1].buffer_type = MYSQL_TYPE_STRING;
+    results[1].buffer = username;
+    results[1].buffer_length = sizeof(username) - 1;
+    results[1].length = &username_length;
+    results[2].buffer_type = MYSQL_TYPE_STRING;
+    results[2].buffer = nickname;
+    results[2].buffer_length = sizeof(nickname) - 1;
+    results[2].length = &nickname_length;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化群成员列表查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "群成员列表查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    while (mysql_stmt_fetch(stmt) == 0) {
+        username[username_length < sizeof(username) ? username_length : sizeof(username) - 1] = '\0';
+        nickname[nickname_length < sizeof(nickname) ? nickname_length : sizeof(nickname) - 1] = '\0';
+        snprintf(id_text, sizeof(id_text), "%d", member_id);
+        if (append_protocol_record(result, result_size, id_text, username, nickname) != 0) {
+            fprintf(stderr, "群成员列表结果过长，已截断\n");
+            break;
+        }
+    }
+    status = 0;
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return status;
+}
+
 void get_messages(int user_id, int friend_id, char *result, size_t result_size) {
     char query[500];
     snprintf(query, sizeof(query), "SELECT m.content, DATE_FORMAT(m.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s'), u.nickname FROM messages m "
@@ -389,13 +991,13 @@ void get_messages(int user_id, int friend_id, char *result, size_t result_size) 
         pthread_mutex_unlock(&db_mutex);
         return;
     }
-    
+
     MYSQL_RES *res = mysql_store_result(db_conn);
     if (res == NULL) {
         pthread_mutex_unlock(&db_mutex);
         return;
     }
-    
+
     MYSQL_ROW row;
     while ((row = mysql_fetch_row(res)) != NULL) {
         if (append_protocol_record(result, result_size, row[0], row[1], row[2]) != 0) {
@@ -404,18 +1006,38 @@ void get_messages(int user_id, int friend_id, char *result, size_t result_size) 
         }
     }
     mysql_free_result(res);
+
+    MYSQL_STMT *stmt = mysql_stmt_init(db_conn);
+    if (stmt != NULL) {
+        const char *mark_statement =
+            "UPDATE messages SET delivered = 1 WHERE receiver_id = ? AND sender_id = ?";
+        MYSQL_BIND params[2];
+        int bound_user_id = user_id;
+        int bound_friend_id = friend_id;
+
+        memset(params, 0, sizeof(params));
+        bind_int_param(&params[0], &bound_user_id);
+        bind_int_param(&params[1], &bound_friend_id);
+
+        if (mysql_stmt_prepare(stmt, mark_statement, strlen(mark_statement)) == 0 &&
+            mysql_stmt_bind_param(stmt, params) == 0) {
+            mysql_stmt_execute(stmt);
+        }
+        mysql_stmt_close(stmt);
+    }
     pthread_mutex_unlock(&db_mutex);
 }
 
 int save_message(int sender_id, int receiver_id, const char *content) {
     const char *statement =
-        "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)";
+        "INSERT INTO messages (sender_id, receiver_id, content, delivered) VALUES (?, ?, ?, ?)";
     MYSQL_STMT *stmt = NULL;
-    MYSQL_BIND params[3];
+    MYSQL_BIND params[4];
     unsigned long content_length;
     int status = -1;
     int bound_sender_id = sender_id;
     int bound_receiver_id = receiver_id;
+    int delivered = is_user_online(receiver_id) ? 1 : 0;
 
     if (sender_id <= 0 ||
         receiver_id <= 0 ||
@@ -427,6 +1049,7 @@ int save_message(int sender_id, int receiver_id, const char *content) {
     bind_int_param(&params[0], &bound_sender_id);
     bind_int_param(&params[1], &bound_receiver_id);
     bind_string_param(&params[2], content, &content_length);
+    bind_int_param(&params[3], &delivered);
 
     pthread_mutex_lock(&db_mutex);
     stmt = mysql_stmt_init(db_conn);
@@ -452,6 +1075,306 @@ cleanup:
     return status;
 }
 
+static int fetch_group_member_ids_locked(int group_id, int *member_ids, int max_members) {
+    const char *statement =
+        "SELECT user_id FROM group_members WHERE group_id = ? ORDER BY id";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[1];
+    int bound_group_id = group_id;
+    int member_id = 0;
+    int count = 0;
+
+    if (group_id <= 0 || member_ids == NULL || max_members <= 0) {
+        return 0;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_group_id);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_LONG;
+    results[0].buffer = &member_id;
+
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化群成员ID查询失败: %s\n", mysql_error(db_conn));
+        return 0;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "群成员ID查询失败: %s\n", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return 0;
+    }
+
+    while (count < max_members && mysql_stmt_fetch(stmt) == 0) {
+        member_ids[count++] = member_id;
+    }
+
+    mysql_stmt_close(stmt);
+    return count;
+}
+
+int save_group_message(int sender_id, int group_id, const char *content, int *message_id) {
+    const char *insert_message =
+        "INSERT INTO group_messages (group_id, sender_id, content) VALUES (?, ?, ?)";
+    const char *insert_delivery =
+        "INSERT INTO group_message_deliveries (message_id, user_id, delivered) VALUES (?, ?, ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[3];
+    unsigned long content_length;
+    int bound_sender_id = sender_id;
+    int bound_group_id = group_id;
+    int saved_message_id = -1;
+    int member_ids[MAX_CLIENTS];
+    int member_count;
+    int status = -1;
+
+    if (message_id != NULL) {
+        *message_id = -1;
+    }
+    if (sender_id <= 0 ||
+        group_id <= 0 ||
+        !is_protocol_safe_text(content, 1) ||
+        !is_group_member(sender_id, group_id)) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_group_id);
+    bind_int_param(&params[1], &bound_sender_id);
+    bind_string_param(&params[2], content, &content_length);
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化群消息语句失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, insert_message, strlen(insert_message)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "保存群消息失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    saved_message_id = (int)mysql_insert_id(db_conn);
+    mysql_stmt_close(stmt);
+    stmt = NULL;
+
+    member_count = fetch_group_member_ids_locked(group_id, member_ids, MAX_CLIENTS);
+    for (int i = 0; i < member_count; i++) {
+        MYSQL_BIND delivery_params[3];
+        int delivered = (member_ids[i] == sender_id || is_user_online(member_ids[i])) ? 1 : 0;
+        int bound_message_id = saved_message_id;
+        int bound_user_id = member_ids[i];
+
+        memset(delivery_params, 0, sizeof(delivery_params));
+        bind_int_param(&delivery_params[0], &bound_message_id);
+        bind_int_param(&delivery_params[1], &bound_user_id);
+        bind_int_param(&delivery_params[2], &delivered);
+
+        stmt = mysql_stmt_init(db_conn);
+        if (stmt == NULL ||
+            mysql_stmt_prepare(stmt, insert_delivery, strlen(insert_delivery)) != 0 ||
+            mysql_stmt_bind_param(stmt, delivery_params) != 0 ||
+            mysql_stmt_execute(stmt) != 0) {
+            fprintf(stderr, "保存群消息投递状态失败: %s\n",
+                    stmt != NULL ? mysql_stmt_error(stmt) : mysql_error(db_conn));
+            if (stmt != NULL) {
+                mysql_stmt_close(stmt);
+                stmt = NULL;
+            }
+            goto cleanup;
+        }
+        mysql_stmt_close(stmt);
+        stmt = NULL;
+    }
+
+    if (message_id != NULL) {
+        *message_id = saved_message_id;
+    }
+    status = 0;
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return status;
+}
+
+int get_group_messages(int requester_id, int group_id, char *result, size_t result_size) {
+    const char *statement =
+        "SELECT gm.content, DATE_FORMAT(gm.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s'), u.nickname "
+        "FROM group_messages gm JOIN users u ON gm.sender_id = u.id "
+        "WHERE gm.group_id = ? ORDER BY gm.timestamp, gm.id";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[3];
+    int bound_group_id = group_id;
+    char content[BUFFER_SIZE] = "";
+    char timestamp[50] = "";
+    char nickname[50] = "";
+    unsigned long content_length = 0;
+    unsigned long timestamp_length = 0;
+    unsigned long nickname_length = 0;
+    int status = -1;
+
+    if (result_size == 0) {
+        return -1;
+    }
+    result[0] = '\0';
+    if (!is_group_member(requester_id, group_id)) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_group_id);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_STRING;
+    results[0].buffer = content;
+    results[0].buffer_length = sizeof(content) - 1;
+    results[0].length = &content_length;
+    results[1].buffer_type = MYSQL_TYPE_STRING;
+    results[1].buffer = timestamp;
+    results[1].buffer_length = sizeof(timestamp) - 1;
+    results[1].length = &timestamp_length;
+    results[2].buffer_type = MYSQL_TYPE_STRING;
+    results[2].buffer = nickname;
+    results[2].buffer_length = sizeof(nickname) - 1;
+    results[2].length = &nickname_length;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化群消息查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "群消息查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    while (mysql_stmt_fetch(stmt) == 0) {
+        content[content_length < sizeof(content) ? content_length : sizeof(content) - 1] = '\0';
+        timestamp[timestamp_length < sizeof(timestamp) ? timestamp_length : sizeof(timestamp) - 1] = '\0';
+        nickname[nickname_length < sizeof(nickname) ? nickname_length : sizeof(nickname) - 1] = '\0';
+        if (append_protocol_record(result, result_size, content, timestamp, nickname) != 0) {
+            fprintf(stderr, "群消息列表结果过长，已截断\n");
+            break;
+        }
+    }
+
+    mysql_stmt_close(stmt);
+    stmt = NULL;
+
+    const char *mark_statement =
+        "UPDATE group_message_deliveries d "
+        "JOIN group_messages gm ON d.message_id = gm.id "
+        "SET d.delivered = 1 WHERE d.user_id = ? AND gm.group_id = ?";
+    MYSQL_BIND mark_params[2];
+    int bound_requester_id = requester_id;
+
+    memset(mark_params, 0, sizeof(mark_params));
+    bind_int_param(&mark_params[0], &bound_requester_id);
+    bind_int_param(&mark_params[1], &bound_group_id);
+
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt != NULL &&
+        mysql_stmt_prepare(stmt, mark_statement, strlen(mark_statement)) == 0 &&
+        mysql_stmt_bind_param(stmt, mark_params) == 0) {
+        mysql_stmt_execute(stmt);
+    }
+    status = 0;
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return status;
+}
+
+void get_offline_messages(int user_id, char *result, size_t result_size) {
+    const char *private_statement =
+        "SELECT sender_id, COUNT(*) FROM messages WHERE receiver_id = ? AND delivered = 0 GROUP BY sender_id";
+    const char *group_statement =
+        "SELECT gm.group_id, COUNT(*) FROM group_message_deliveries d "
+        "JOIN group_messages gm ON d.message_id = gm.id "
+        "WHERE d.user_id = ? AND d.delivered = 0 GROUP BY gm.group_id";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[2];
+    int bound_user_id = user_id;
+    int related_id = 0;
+    long long count = 0;
+    char id_text[16];
+    char count_text[32];
+
+    if (result_size == 0) {
+        return;
+    }
+    result[0] = '\0';
+    if (user_id <= 0) {
+        return;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_user_id);
+
+    pthread_mutex_lock(&db_mutex);
+    for (int pass = 0; pass < 2; pass++) {
+        const char *statement = pass == 0 ? private_statement : group_statement;
+        const char *type = pass == 0 ? "PRIVATE" : "GROUP";
+
+        stmt = mysql_stmt_init(db_conn);
+        if (stmt == NULL) {
+            fprintf(stderr, "初始化离线消息查询失败: %s\n", mysql_error(db_conn));
+            break;
+        }
+
+        memset(results, 0, sizeof(results));
+        results[0].buffer_type = MYSQL_TYPE_LONG;
+        results[0].buffer = &related_id;
+        results[1].buffer_type = MYSQL_TYPE_LONGLONG;
+        results[1].buffer = &count;
+
+        if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+            mysql_stmt_bind_param(stmt, params) != 0 ||
+            mysql_stmt_execute(stmt) != 0 ||
+            mysql_stmt_bind_result(stmt, results) != 0) {
+            fprintf(stderr, "离线消息查询失败: %s\n", mysql_stmt_error(stmt));
+            mysql_stmt_close(stmt);
+            stmt = NULL;
+            break;
+        }
+
+        while (mysql_stmt_fetch(stmt) == 0) {
+            snprintf(id_text, sizeof(id_text), "%d", related_id);
+            snprintf(count_text, sizeof(count_text), "%lld", count);
+            if (append_protocol_record(result, result_size, type, id_text, count_text) != 0) {
+                fprintf(stderr, "离线消息结果过长，已截断\n");
+                break;
+            }
+        }
+
+        mysql_stmt_close(stmt);
+        stmt = NULL;
+    }
+    pthread_mutex_unlock(&db_mutex);
+}
+
 void broadcast_message(int sender_id, const char *message) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < client_count; i++) {
@@ -474,24 +1397,115 @@ void send_to_user(int user_id, const char *message) {
     pthread_mutex_unlock(&clients_mutex);
 }
 
+int get_group_member_ids(int group_id, int *member_ids, int max_members) {
+    int count;
+
+    pthread_mutex_lock(&db_mutex);
+    count = fetch_group_member_ids_locked(group_id, member_ids, max_members);
+    pthread_mutex_unlock(&db_mutex);
+    return count;
+}
+
+void send_to_group_members(int group_id, const char *message) {
+    int member_ids[MAX_CLIENTS];
+    int member_count = get_group_member_ids(group_id, member_ids, MAX_CLIENTS);
+
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < client_count; i++) {
+        for (int j = 0; j < member_count; j++) {
+            if (clients[i].user_id == member_ids[j]) {
+                send(clients[i].sockfd, message, strlen(message), 0);
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+int get_friend_ids(int user_id, int *friend_ids, int max_friends) {
+    const char *statement =
+        "SELECT friend_id FROM friends WHERE user_id = ? AND status = 1 ORDER BY id";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[1];
+    int bound_user_id = user_id;
+    int friend_id = 0;
+    int count = 0;
+
+    if (user_id <= 0 || friend_ids == NULL || max_friends <= 0) {
+        return 0;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_user_id);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_LONG;
+    results[0].buffer = &friend_id;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化好友ID查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "好友ID查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    while (count < max_friends && mysql_stmt_fetch(stmt) == 0) {
+        friend_ids[count++] = friend_id;
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return count;
+}
+
+void notify_friends_status(int user_id, const char *command, const char *nickname) {
+    int friend_ids[MAX_CLIENTS];
+    int friend_count;
+    char message[BUFFER_SIZE];
+
+    if (user_id <= 0 || command == NULL || nickname == NULL) {
+        return;
+    }
+
+    friend_count = get_friend_ids(user_id, friend_ids, MAX_CLIENTS);
+    snprintf(message, sizeof(message), "%s:%d:%s", command, user_id, nickname);
+    for (int i = 0; i < friend_count; i++) {
+        if (!has_block_between(user_id, friend_ids[i])) {
+            send_to_user(friend_ids[i], message);
+        }
+    }
+}
+
 void *handle_client(void *arg) {
     Client *client = (Client *)arg;
     char buffer[BUFFER_SIZE];
     char response[BUFFER_SIZE];
-    
+
     printf("新客户端连接: %s:%d\n", inet_ntoa(client->addr.sin_addr), ntohs(client->addr.sin_port));
-    
+
     while (1) {
         memset(buffer, 0, BUFFER_SIZE);
         int bytes_read = recv(client->sockfd, buffer, BUFFER_SIZE - 1, 0);
-        
+
         if (bytes_read <= 0) {
             printf("客户端断开连接: %s:%d\n", inet_ntoa(client->addr.sin_addr), ntohs(client->addr.sin_port));
             break;
         }
-        
+
         printf("收到消息: %s\n", buffer);
-        
+
         if (strncmp(buffer, "REGISTER:", 9) == 0) {
             char username[50], password[50], nickname[50];
             if (sscanf(buffer + 9, "%49[^,],%49[^,],%49[^\n]", username, password, nickname) == 3) {
@@ -509,6 +1523,7 @@ void *handle_client(void *arg) {
         else if (strncmp(buffer, "LOGIN:", 6) == 0) {
             char username[50], password[50], nickname[50];
             int user_id;
+            int login_success = 0;
 
             if (sscanf(buffer + 6, "%49[^,],%49[^\n]", username, password) == 2 &&
                 login_user(username, password, nickname, &user_id) == 0) {
@@ -519,10 +1534,14 @@ void *handle_client(void *arg) {
                 client->nickname[sizeof(client->nickname) - 1] = '\0';
                 update_client_session(client->sockfd, user_id, username, nickname);
                 snprintf(response, sizeof(response), "LOGIN_SUCCESS:%d:%s:%s", user_id, username, nickname);
+                login_success = 1;
             } else {
                 snprintf(response, sizeof(response), "LOGIN_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
+            if (login_success) {
+                notify_friends_status(client->user_id, "FRIEND_ONLINE", client->nickname);
+            }
         }
         else if (strncmp(buffer, "ADDFRIEND:", 10) == 0) {
             int requested_user_id, friend_id;
@@ -592,7 +1611,8 @@ void *handle_client(void *arg) {
                 printf("忽略客户端声明的发送者ID: %d，使用登录会话ID: %d\n",
                        requested_sender_id, sender_id);
             }
-            if (!are_friends(sender_id, receiver_id) || save_message(sender_id, receiver_id, content) != 0) {
+            if (!can_send_private_message(sender_id, receiver_id) ||
+                save_message(sender_id, receiver_id, content) != 0) {
                 snprintf(response, sizeof(response), "SEND_FAILED");
                 send(client->sockfd, response, strlen(response), 0);
                 continue;
@@ -602,11 +1622,167 @@ void *handle_client(void *arg) {
             send_to_user(receiver_id, response);
             send(client->sockfd, response, strlen(response), 0);
         }
+        else if (strncmp(buffer, "CREATE_GROUP:", 13) == 0) {
+            char payload[BUFFER_SIZE];
+            char group_name[80];
+            char member_csv[BUFFER_SIZE] = "";
+            char *comma;
+            int group_id = -1;
+
+            if (client->user_id <= 0) {
+                snprintf(response, sizeof(response), "CREATE_GROUP_FAILED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
+
+            snprintf(payload, sizeof(payload), "%s", buffer + 13);
+            comma = strchr(payload, ',');
+            if (comma != NULL) {
+                *comma = '\0';
+                snprintf(member_csv, sizeof(member_csv), "%s", comma + 1);
+            }
+            snprintf(group_name, sizeof(group_name), "%s", payload);
+
+            group_id = create_group(client->user_id, group_name, member_csv);
+            if (group_id > 0) {
+                snprintf(response, sizeof(response), "CREATE_GROUP_SUCCESS:%d", group_id);
+            } else {
+                snprintf(response, sizeof(response), "CREATE_GROUP_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "GROUPS:", 7) == 0) {
+            int requested_user_id;
+            if (client->user_id > 0 && sscanf(buffer + 7, "%d", &requested_user_id) == 1) {
+                char groups[BUFFER_SIZE];
+                if (requested_user_id != client->user_id) {
+                    printf("忽略客户端声明的群列表用户ID: %d，使用登录会话ID: %d\n",
+                           requested_user_id, client->user_id);
+                }
+                get_groups(client->user_id, groups, sizeof(groups));
+                snprintf(response, sizeof(response), "GROUPS_LIST:%s", groups);
+            } else {
+                snprintf(response, sizeof(response), "GROUPS_LIST:");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "GROUP_MEMBERS:", 14) == 0) {
+            int group_id;
+            char members[BUFFER_SIZE];
+            if (client->user_id > 0 &&
+                sscanf(buffer + 14, "%d", &group_id) == 1 &&
+                get_group_members(client->user_id, group_id, members, sizeof(members)) == 0) {
+                snprintf(response, sizeof(response), "GROUP_MEMBERS_LIST:%s", members);
+            } else {
+                snprintf(response, sizeof(response), "GROUP_MEMBERS_LIST:");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "ADD_GROUP_MEMBER:", 17) == 0) {
+            int group_id, new_member_id;
+            if (client->user_id > 0 &&
+                sscanf(buffer + 17, "%d,%d", &group_id, &new_member_id) == 2 &&
+                add_group_member(client->user_id, group_id, new_member_id) == 0) {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
+            } else {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "GROUP_MESSAGES:", 15) == 0) {
+            int group_id;
+            char messages[BUFFER_SIZE];
+            if (client->user_id > 0 &&
+                sscanf(buffer + 15, "%d", &group_id) == 1 &&
+                get_group_messages(client->user_id, group_id, messages,
+                                   sizeof(messages) - strlen("GROUP_MESSAGES_LIST:")) == 0) {
+                snprintf(response, sizeof(response), "GROUP_MESSAGES_LIST:%s", messages);
+            } else {
+                snprintf(response, sizeof(response), "GROUP_MESSAGES_LIST:");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "SEND_GROUP:", 11) == 0) {
+            int requested_sender_id, sender_id, group_id, message_id;
+            char content[BUFFER_SIZE];
+
+            if (client->user_id <= 0 ||
+                sscanf(buffer + 11, "%d,%d,%1023[^\n]", &requested_sender_id, &group_id, content) != 3) {
+                snprintf(response, sizeof(response), "SEND_GROUP_FAILED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
+
+            sender_id = client->user_id;
+            if (requested_sender_id != sender_id) {
+                printf("忽略客户端声明的群消息发送者ID: %d，使用登录会话ID: %d\n",
+                       requested_sender_id, sender_id);
+            }
+
+            if (save_group_message(sender_id, group_id, content, &message_id) != 0) {
+                snprintf(response, sizeof(response), "SEND_GROUP_FAILED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
+
+            snprintf(response, sizeof(response), "NEW_GROUP_MESSAGE:%d:%d:%s:%s",
+                     group_id, sender_id, client->nickname, content);
+            send_to_group_members(group_id, response);
+        }
+        else if (strncmp(buffer, "BLOCK_USER:", 11) == 0) {
+            int requested_user_id, blocked_id;
+            if (client->user_id > 0 &&
+                sscanf(buffer + 11, "%d,%d", &requested_user_id, &blocked_id) == 2 &&
+                block_user(client->user_id, blocked_id) == 0) {
+                if (requested_user_id != client->user_id) {
+                    printf("忽略客户端声明的屏蔽操作用户ID: %d，使用登录会话ID: %d\n",
+                           requested_user_id, client->user_id);
+                }
+                snprintf(response, sizeof(response), "BLOCK_USER_SUCCESS");
+            } else {
+                snprintf(response, sizeof(response), "BLOCK_USER_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "UNBLOCK_USER:", 13) == 0) {
+            int requested_user_id, blocked_id;
+            if (client->user_id > 0 &&
+                sscanf(buffer + 13, "%d,%d", &requested_user_id, &blocked_id) == 2 &&
+                unblock_user(client->user_id, blocked_id) == 0) {
+                if (requested_user_id != client->user_id) {
+                    printf("忽略客户端声明的解除屏蔽用户ID: %d，使用登录会话ID: %d\n",
+                           requested_user_id, client->user_id);
+                }
+                snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
+            } else {
+                snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "OFFLINE_MESSAGES:", 17) == 0) {
+            int requested_user_id;
+            if (client->user_id > 0 && sscanf(buffer + 17, "%d", &requested_user_id) == 1) {
+                char offline[BUFFER_SIZE];
+                if (requested_user_id != client->user_id) {
+                    printf("忽略客户端声明的离线消息用户ID: %d，使用登录会话ID: %d\n",
+                           requested_user_id, client->user_id);
+                }
+                get_offline_messages(client->user_id, offline, sizeof(offline));
+                snprintf(response, sizeof(response), "OFFLINE_MESSAGES_LIST:%s", offline);
+            } else {
+                snprintf(response, sizeof(response), "OFFLINE_MESSAGES_LIST:");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
         else if (strcmp(buffer, "QUIT") == 0) {
             break;
         }
     }
-    
+
+    int disconnected_user_id = client->user_id;
+    char disconnected_nickname[50];
+    snprintf(disconnected_nickname, sizeof(disconnected_nickname), "%s", client->nickname);
+
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < client_count; i++) {
         if (clients[i].sockfd == client->sockfd) {
@@ -618,7 +1794,11 @@ void *handle_client(void *arg) {
         }
     }
     pthread_mutex_unlock(&clients_mutex);
-    
+
+    if (disconnected_user_id > 0 && !is_user_online(disconnected_user_id)) {
+        notify_friends_status(disconnected_user_id, "FRIEND_OFFLINE", disconnected_nickname);
+    }
+
     close(client->sockfd);
     free(client);
     return NULL;
@@ -629,18 +1809,18 @@ int main(void) {
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
-    
+
     pthread_mutex_init(&clients_mutex, NULL);
     pthread_mutex_init(&db_mutex, NULL);
-    
+
     init_database();
     create_tables();
-    
+
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
-    
+
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
         perror("setsockopt SO_REUSEADDR");
         exit(EXIT_FAILURE);
@@ -652,46 +1832,46 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 #endif
-    
+
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
-    
+
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
-    
+
     if (listen(server_fd, 3) < 0) {
         perror("listen");
         exit(EXIT_FAILURE);
     }
-    
+
     printf("服务器启动成功，监听端口 %d...\n", PORT);
-    
+
     while (1) {
         if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
             perror("accept");
             continue;
         }
-        
+
         if (client_count >= MAX_CLIENTS) {
             printf("客户端数量已达上限\n");
             close(new_socket);
             continue;
         }
-        
+
         Client *client = (Client *)malloc(sizeof(Client));
         client->sockfd = new_socket;
         client->addr = address;
         client->user_id = -1;
         client->username[0] = '\0';
         client->nickname[0] = '\0';
-        
+
         pthread_mutex_lock(&clients_mutex);
         clients[client_count++] = *client;
         pthread_mutex_unlock(&clients_mutex);
-        
+
         pthread_t thread;
         if (pthread_create(&thread, NULL, handle_client, client) != 0) {
             perror("pthread_create");
@@ -699,7 +1879,7 @@ int main(void) {
         }
         pthread_detach(thread);
     }
-    
+
     mysql_close(db_conn);
     return 0;
 }
