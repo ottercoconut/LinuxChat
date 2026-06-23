@@ -19,6 +19,7 @@ typedef struct {
     struct sockaddr_in addr;
     int user_id;
     char username[50];
+    char nickname[50];
 } Client;
 
 Client clients[MAX_CLIENTS];
@@ -26,7 +27,22 @@ pthread_mutex_t clients_mutex;
 
 int client_count = 0;
 
-void init_database() {
+void update_client_session(int sockfd, int user_id, const char *username, const char *nickname) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i].sockfd == sockfd) {
+            clients[i].user_id = user_id;
+            strncpy(clients[i].username, username, sizeof(clients[i].username) - 1);
+            clients[i].username[sizeof(clients[i].username) - 1] = '\0';
+            strncpy(clients[i].nickname, nickname, sizeof(clients[i].nickname) - 1);
+            clients[i].nickname[sizeof(clients[i].nickname) - 1] = '\0';
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void init_database(void) {
     db_conn = mysql_init(NULL);
     if (!mysql_real_connect(db_conn, "localhost", "chat_user", "chat_password", "chat_db", 0, NULL, 0)) {
         fprintf(stderr, "数据库连接失败: %s\n", mysql_error(db_conn));
@@ -35,7 +51,7 @@ void init_database() {
     printf("数据库连接成功\n");
 }
 
-void create_tables() {
+void create_tables(void) {
     char *create_users = "CREATE TABLE IF NOT EXISTS users ("
                          "id INT AUTO_INCREMENT PRIMARY KEY,"
                          "username VARCHAR(50) UNIQUE NOT NULL,"
@@ -257,7 +273,11 @@ void *handle_client(void *arg) {
             
             if (login_user(username, password, nickname, &user_id) == 0) {
                 client->user_id = user_id;
-                strcpy(client->username, username);
+                strncpy(client->username, username, sizeof(client->username) - 1);
+                client->username[sizeof(client->username) - 1] = '\0';
+                strncpy(client->nickname, nickname, sizeof(client->nickname) - 1);
+                client->nickname[sizeof(client->nickname) - 1] = '\0';
+                update_client_session(client->sockfd, user_id, username, nickname);
                 sprintf(response, "LOGIN_SUCCESS:%d:%s:%s", user_id, username, nickname);
             } else {
                 strcpy(response, "LOGIN_FAILED");
@@ -294,16 +314,29 @@ void *handle_client(void *arg) {
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "SEND:", 5) == 0) {
-            int sender_id, receiver_id;
+            int sender_id, requested_sender_id, receiver_id;
             char content[BUFFER_SIZE];
-            sscanf(buffer + 5, "%d,%d,%[^\n]", &sender_id, &receiver_id, content);
-            
+
+            if (client->user_id <= 0) {
+                strcpy(response, "SEND_FAILED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
+
+            if (sscanf(buffer + 5, "%d,%d,%[^\n]", &requested_sender_id, &receiver_id, content) != 3) {
+                strcpy(response, "SEND_FAILED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
+
+            sender_id = client->user_id;
+            if (requested_sender_id != sender_id) {
+                printf("忽略客户端声明的发送者ID: %d，使用登录会话ID: %d\n",
+                       requested_sender_id, sender_id);
+            }
             save_message(sender_id, receiver_id, content);
-            
-            char nick[50];
-            login_user(client->username, "", nick, &sender_id);
-            
-            sprintf(response, "NEW_MESSAGE:%d:%s:%s", sender_id, nick, content);
+
+            sprintf(response, "NEW_MESSAGE:%d:%s:%s", sender_id, client->nickname, content);
             send_to_user(receiver_id, response);
             send(client->sockfd, response, strlen(response), 0);
         }
@@ -329,7 +362,7 @@ void *handle_client(void *arg) {
     return NULL;
 }
 
-int main() {
+int main(void) {
     int server_fd, new_socket;
     struct sockaddr_in address;
     int opt = 1;
@@ -389,6 +422,8 @@ int main() {
         client->sockfd = new_socket;
         client->addr = address;
         client->user_id = -1;
+        client->username[0] = '\0';
+        client->nickname[0] = '\0';
         
         pthread_mutex_lock(&clients_mutex);
         clients[client_count++] = *client;
