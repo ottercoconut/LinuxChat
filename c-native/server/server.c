@@ -6,7 +6,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
-#include <mysql/mysql.h>
+#include <mysql.h>
 
 #define PORT 8888
 #define MAX_CLIENTS 100
@@ -28,7 +28,7 @@ int client_count = 0;
 
 void init_database() {
     db_conn = mysql_init(NULL);
-    if (!mysql_real_connect(db_conn, "localhost", "root", "password", "chat_db", 0, NULL, 0)) {
+    if (!mysql_real_connect(db_conn, "localhost", "chat_user", "chat_password", "chat_db", 0, NULL, 0)) {
         fprintf(stderr, "数据库连接失败: %s\n", mysql_error(db_conn));
         exit(1);
     }
@@ -345,10 +345,17 @@ int main() {
         exit(EXIT_FAILURE);
     }
     
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        perror("setsockopt");
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt SO_REUSEADDR");
         exit(EXIT_FAILURE);
     }
+
+#ifdef SO_REUSEPORT
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt SO_REUSEPORT");
+        exit(EXIT_FAILURE);
+    }
+#endif
     
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;

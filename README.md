@@ -100,6 +100,21 @@ cd c-native/server
 gcc server.c -o server $(mysql_config --cflags --libs) -lpthread
 ```
 
+如果使用 MySQL 官网安装包且 `mysql_config` 不在 `PATH` 中，可以使用完整路径：
+
+```bash
+cd c-native/server
+gcc server.c -o server $(/usr/local/mysql/bin/mysql_config --cflags --libs) -lpthread
+```
+
+如果运行时提示找不到 `libssl.3.dylib` 或 `libcrypto.3.dylib`，需要为本地生成的 `server` 修正动态库路径：
+
+```bash
+install_name_tool -add_rpath /usr/local/mysql/lib server
+install_name_tool -change libssl.3.dylib /opt/homebrew/lib/libssl.3.dylib server
+install_name_tool -change libcrypto.3.dylib /opt/homebrew/lib/libcrypto.3.dylib server
+```
+
 编译客户端：
 
 ```bash
