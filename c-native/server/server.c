@@ -13,6 +13,7 @@
 #define BUFFER_SIZE 1024
 
 MYSQL *db_conn;
+pthread_mutex_t db_mutex;
 
 typedef struct {
     int sockfd;
@@ -26,6 +27,28 @@ Client clients[MAX_CLIENTS];
 pthread_mutex_t clients_mutex;
 
 int client_count = 0;
+
+int append_protocol_record(char *result, size_t result_size,
+                           const char *field1, const char *field2, const char *field3) {
+    if (result_size == 0) {
+        return -1;
+    }
+
+    size_t used = strlen(result);
+
+    if (used >= result_size) {
+        return -1;
+    }
+
+    int written = snprintf(result + used, result_size - used, "%s:%s:%s;",
+                           field1 ? field1 : "", field2 ? field2 : "", field3 ? field3 : "");
+    if (written < 0 || (size_t)written >= result_size - used) {
+        result[result_size - 1] = '\0';
+        return -1;
+    }
+
+    return 0;
+}
 
 void update_client_session(int sockfd, int user_id, const char *username, const char *nickname) {
     pthread_mutex_lock(&clients_mutex);
@@ -77,6 +100,7 @@ void create_tables(void) {
                            "FOREIGN KEY(user_id) REFERENCES users(id),"
                            "FOREIGN KEY(friend_id) REFERENCES users(id))";
     
+    pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, create_users) != 0) {
         fprintf(stderr, "创建users表失败: %s\n", mysql_error(db_conn));
     }
@@ -86,132 +110,164 @@ void create_tables(void) {
     if (mysql_query(db_conn, create_friends) != 0) {
         fprintf(stderr, "创建friends表失败: %s\n", mysql_error(db_conn));
     }
+    pthread_mutex_unlock(&db_mutex);
     printf("数据库表初始化完成\n");
 }
 
 int register_user(const char *username, const char *password, const char *nickname) {
     char query[500];
-    sprintf(query, "INSERT INTO users (username, password, nickname) VALUES ('%s', '%s', '%s')",
-            username, password, nickname);
+    snprintf(query, sizeof(query), "INSERT INTO users (username, password, nickname) VALUES ('%s', '%s', '%s')",
+             username, password, nickname);
     
+    pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "注册失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
         return -1;
     }
-    return mysql_insert_id(db_conn);
+
+    int user_id = (int)mysql_insert_id(db_conn);
+    pthread_mutex_unlock(&db_mutex);
+    return user_id;
 }
 
 int login_user(const char *username, const char *password, char *nickname, int *user_id) {
     char query[500];
-    sprintf(query, "SELECT id, nickname FROM users WHERE username='%s' AND password='%s'",
-            username, password);
-    
+    snprintf(query, sizeof(query), "SELECT id, nickname FROM users WHERE username='%s' AND password='%s'",
+             username, password);
+
+    pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "登录查询失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
         return -1;
     }
     
     MYSQL_RES *result = mysql_store_result(db_conn);
     if (result == NULL) {
         fprintf(stderr, "获取结果失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
         return -1;
     }
     
     MYSQL_ROW row = mysql_fetch_row(result);
     if (row != NULL) {
         *user_id = atoi(row[0]);
-        strcpy(nickname, row[1]);
+        strncpy(nickname, row[1], 49);
+        nickname[49] = '\0';
         mysql_free_result(result);
+        pthread_mutex_unlock(&db_mutex);
         return 0;
     }
     
     mysql_free_result(result);
+    pthread_mutex_unlock(&db_mutex);
     return -1;
 }
 
 int add_friend(int user_id, int friend_id) {
     char query[500];
-    sprintf(query, "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
-            user_id, friend_id);
+    snprintf(query, sizeof(query), "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
+             user_id, friend_id);
     
+    pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "添加好友失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
         return -1;
     }
     
-    sprintf(query, "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
-            friend_id, user_id);
+    snprintf(query, sizeof(query), "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
+             friend_id, user_id);
     
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "添加好友失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
         return -1;
     }
+    pthread_mutex_unlock(&db_mutex);
     return 0;
 }
 
-void get_friends(int user_id, char *result) {
+void get_friends(int user_id, char *result, size_t result_size) {
     char query[500];
-    sprintf(query, "SELECT u.id, u.username, u.nickname FROM friends f "
-                   "JOIN users u ON f.friend_id = u.id WHERE f.user_id = %d", user_id);
-    
+    snprintf(query, sizeof(query), "SELECT u.id, u.username, u.nickname FROM friends f "
+                                   "JOIN users u ON f.friend_id = u.id WHERE f.user_id = %d", user_id);
+
+    if (result_size == 0) {
+        return;
+    }
+    result[0] = '\0';
+    pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "获取好友列表失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
         return;
     }
     
     MYSQL_RES *res = mysql_store_result(db_conn);
-    if (res == NULL) return;
+    if (res == NULL) {
+        pthread_mutex_unlock(&db_mutex);
+        return;
+    }
     
     MYSQL_ROW row;
-    strcpy(result, "");
     while ((row = mysql_fetch_row(res)) != NULL) {
-        strcat(result, row[0]);
-        strcat(result, ":");
-        strcat(result, row[1]);
-        strcat(result, ":");
-        strcat(result, row[2]);
-        strcat(result, ";");
+        if (append_protocol_record(result, result_size, row[0], row[1], row[2]) != 0) {
+            fprintf(stderr, "好友列表结果过长，已截断\n");
+            break;
+        }
     }
     mysql_free_result(res);
+    pthread_mutex_unlock(&db_mutex);
 }
 
-void get_messages(int user_id, int friend_id, char *result) {
+void get_messages(int user_id, int friend_id, char *result, size_t result_size) {
     char query[500];
-    sprintf(query, "SELECT m.content, m.timestamp, u.nickname FROM messages m "
-                   "JOIN users u ON m.sender_id = u.id WHERE "
-                   "(m.sender_id = %d AND m.receiver_id = %d) OR "
-                   "(m.sender_id = %d AND m.receiver_id = %d) ORDER BY m.timestamp",
-                   user_id, friend_id, friend_id, user_id);
-    
+    snprintf(query, sizeof(query), "SELECT m.content, DATE_FORMAT(m.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s'), u.nickname FROM messages m "
+                                   "JOIN users u ON m.sender_id = u.id WHERE "
+                                   "(m.sender_id = %d AND m.receiver_id = %d) OR "
+                                   "(m.sender_id = %d AND m.receiver_id = %d) ORDER BY m.timestamp",
+             user_id, friend_id, friend_id, user_id);
+
+    if (result_size == 0) {
+        return;
+    }
+    result[0] = '\0';
+    pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "获取消息失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
         return;
     }
     
     MYSQL_RES *res = mysql_store_result(db_conn);
-    if (res == NULL) return;
+    if (res == NULL) {
+        pthread_mutex_unlock(&db_mutex);
+        return;
+    }
     
     MYSQL_ROW row;
-    strcpy(result, "");
     while ((row = mysql_fetch_row(res)) != NULL) {
-        strcat(result, row[0]);
-        strcat(result, ":");
-        strcat(result, row[1]);
-        strcat(result, ":");
-        strcat(result, row[2]);
-        strcat(result, ";");
+        if (append_protocol_record(result, result_size, row[0], row[1], row[2]) != 0) {
+            fprintf(stderr, "消息列表结果过长，已截断\n");
+            break;
+        }
     }
     mysql_free_result(res);
+    pthread_mutex_unlock(&db_mutex);
 }
 
 void save_message(int sender_id, int receiver_id, const char *content) {
     char query[1000];
-    sprintf(query, "INSERT INTO messages (sender_id, receiver_id, content) VALUES (%d, %d, '%s')",
-            sender_id, receiver_id, content);
-    
+    snprintf(query, sizeof(query), "INSERT INTO messages (sender_id, receiver_id, content) VALUES (%d, %d, '%s')",
+             sender_id, receiver_id, content);
+
+    pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "保存消息失败: %s\n", mysql_error(db_conn));
     }
+    pthread_mutex_unlock(&db_mutex);
 }
 
 void broadcast_message(int sender_id, const char *message) {
@@ -256,61 +312,66 @@ void *handle_client(void *arg) {
         
         if (strncmp(buffer, "REGISTER:", 9) == 0) {
             char username[50], password[50], nickname[50];
-            sscanf(buffer + 9, "%[^,],%[^,],%s", username, password, nickname);
-            
-            int user_id = register_user(username, password, nickname);
-            if (user_id > 0) {
-                sprintf(response, "REGISTER_SUCCESS:%d", user_id);
+            if (sscanf(buffer + 9, "%49[^,],%49[^,],%49s", username, password, nickname) == 3) {
+                int user_id = register_user(username, password, nickname);
+                if (user_id > 0) {
+                    snprintf(response, sizeof(response), "REGISTER_SUCCESS:%d", user_id);
+                } else {
+                    snprintf(response, sizeof(response), "REGISTER_FAILED");
+                }
             } else {
-                strcpy(response, "REGISTER_FAILED");
+                snprintf(response, sizeof(response), "REGISTER_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "LOGIN:", 6) == 0) {
             char username[50], password[50], nickname[50];
             int user_id;
-            sscanf(buffer + 6, "%[^,],%s", username, password);
-            
-            if (login_user(username, password, nickname, &user_id) == 0) {
+
+            if (sscanf(buffer + 6, "%49[^,],%49s", username, password) == 2 &&
+                login_user(username, password, nickname, &user_id) == 0) {
                 client->user_id = user_id;
                 strncpy(client->username, username, sizeof(client->username) - 1);
                 client->username[sizeof(client->username) - 1] = '\0';
                 strncpy(client->nickname, nickname, sizeof(client->nickname) - 1);
                 client->nickname[sizeof(client->nickname) - 1] = '\0';
                 update_client_session(client->sockfd, user_id, username, nickname);
-                sprintf(response, "LOGIN_SUCCESS:%d:%s:%s", user_id, username, nickname);
+                snprintf(response, sizeof(response), "LOGIN_SUCCESS:%d:%s:%s", user_id, username, nickname);
             } else {
-                strcpy(response, "LOGIN_FAILED");
+                snprintf(response, sizeof(response), "LOGIN_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "ADDFRIEND:", 10) == 0) {
             int user_id, friend_id;
-            sscanf(buffer + 10, "%d,%d", &user_id, &friend_id);
-            
-            if (add_friend(user_id, friend_id) == 0) {
-                strcpy(response, "ADDFRIEND_SUCCESS");
+            if (sscanf(buffer + 10, "%d,%d", &user_id, &friend_id) == 2 &&
+                add_friend(user_id, friend_id) == 0) {
+                snprintf(response, sizeof(response), "ADDFRIEND_SUCCESS");
             } else {
-                strcpy(response, "ADDFRIEND_FAILED");
+                snprintf(response, sizeof(response), "ADDFRIEND_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "FRIENDS:", 8) == 0) {
             int user_id;
-            sscanf(buffer + 8, "%d", &user_id);
-            
-            char friends[BUFFER_SIZE];
-            get_friends(user_id, friends);
-            sprintf(response, "FRIENDS_LIST:%s", friends);
+            if (sscanf(buffer + 8, "%d", &user_id) == 1) {
+                char friends[BUFFER_SIZE];
+                get_friends(user_id, friends, sizeof(friends));
+                snprintf(response, sizeof(response), "FRIENDS_LIST:%s", friends);
+            } else {
+                snprintf(response, sizeof(response), "FRIENDS_LIST:");
+            }
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "MESSAGES:", 9) == 0) {
             int user_id, friend_id;
-            sscanf(buffer + 9, "%d,%d", &user_id, &friend_id);
-            
-            char messages[BUFFER_SIZE * 10];
-            get_messages(user_id, friend_id, messages);
-            sprintf(response, "MESSAGES_LIST:%s", messages);
+            if (sscanf(buffer + 9, "%d,%d", &user_id, &friend_id) == 2) {
+                char messages[BUFFER_SIZE];
+                get_messages(user_id, friend_id, messages, sizeof(messages) - strlen("MESSAGES_LIST:"));
+                snprintf(response, sizeof(response), "MESSAGES_LIST:%s", messages);
+            } else {
+                snprintf(response, sizeof(response), "MESSAGES_LIST:");
+            }
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "SEND:", 5) == 0) {
@@ -318,13 +379,13 @@ void *handle_client(void *arg) {
             char content[BUFFER_SIZE];
 
             if (client->user_id <= 0) {
-                strcpy(response, "SEND_FAILED");
+                snprintf(response, sizeof(response), "SEND_FAILED");
                 send(client->sockfd, response, strlen(response), 0);
                 continue;
             }
 
-            if (sscanf(buffer + 5, "%d,%d,%[^\n]", &requested_sender_id, &receiver_id, content) != 3) {
-                strcpy(response, "SEND_FAILED");
+            if (sscanf(buffer + 5, "%d,%d,%1023[^\n]", &requested_sender_id, &receiver_id, content) != 3) {
+                snprintf(response, sizeof(response), "SEND_FAILED");
                 send(client->sockfd, response, strlen(response), 0);
                 continue;
             }
@@ -336,7 +397,7 @@ void *handle_client(void *arg) {
             }
             save_message(sender_id, receiver_id, content);
 
-            sprintf(response, "NEW_MESSAGE:%d:%s:%s", sender_id, client->nickname, content);
+            snprintf(response, sizeof(response), "NEW_MESSAGE:%d:%s:%s", sender_id, client->nickname, content);
             send_to_user(receiver_id, response);
             send(client->sockfd, response, strlen(response), 0);
         }
@@ -369,11 +430,12 @@ int main(void) {
     int addrlen = sizeof(address);
     
     pthread_mutex_init(&clients_mutex, NULL);
+    pthread_mutex_init(&db_mutex, NULL);
     
     init_database();
     create_tables();
     
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
