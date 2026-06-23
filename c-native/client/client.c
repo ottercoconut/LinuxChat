@@ -271,7 +271,7 @@ gboolean parse_friends_list(gpointer data) {
     const char *ptr = buffer + 14;
     char friend_id[10], username[50], nickname[50];
     
-    while (sscanf(ptr, "%[^:]:%[^:]:%[^;];", friend_id, username, nickname) == 3) {
+    while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", friend_id, username, nickname) == 3) {
         GtkTreeIter iter;
         gtk_list_store_append(store, &iter);
         gtk_list_store_set(store, &iter, 0, atoi(friend_id), 1, nickname, -1);
@@ -294,9 +294,9 @@ gboolean parse_messages_list(gpointer data) {
     const char *ptr = buffer + 15;
     char content[BUFFER_SIZE], timestamp[50], nickname[50];
     
-    while (sscanf(ptr, "%[^:]:%[^:]:%[^;];", content, timestamp, nickname) == 3) {
+    while (sscanf(ptr, "%1023[^:]:%49[^:]:%49[^;];", content, timestamp, nickname) == 3) {
         char msg[BUFFER_SIZE];
-        sprintf(msg, "%s [%s]: %s\n", nickname, timestamp, content);
+        snprintf(msg, sizeof(msg), "%s [%s]: %s\n", nickname, timestamp, content);
         
         gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
         
@@ -315,7 +315,7 @@ gboolean parse_new_message(gpointer data) {
     int sender_id;
     char sender_nickname[50], content[BUFFER_SIZE];
     
-    if (sscanf(buffer + 12, "%d:%[^:]:%[^\n]", &sender_id, sender_nickname, content) == 3) {
+    if (sscanf(buffer + 12, "%d:%49[^:]:%1023[^\n]", &sender_id, sender_nickname, content) == 3) {
         if (sender_id == selected_friend_id || sender_id == current_user_id) {
             GtkTextBuffer *text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view));
             GtkTextIter iter;
@@ -327,7 +327,7 @@ gboolean parse_new_message(gpointer data) {
             char time_str[50];
             strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
             
-            sprintf(msg, "%s [%s]: %s\n", sender_nickname, time_str, content);
+            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_nickname, time_str, content);
             gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
             
             gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(message_view),
