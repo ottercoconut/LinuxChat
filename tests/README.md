@@ -14,7 +14,8 @@ The default suite does not require a running MySQL server. It covers:
 - server session state updates
 - server message routing with socket pairs
 - protocol record bounds and truncation behavior
-- source-level contracts for GTK idle callbacks, bounded parsing, database locking, schema constraints, and response construction
+- P2 security contracts for protocol delimiter rejection and pre-database validation
+- source-level contracts for GTK idle callbacks, bounded parsing, prepared statements, password hashing, session authorization, database locking, schema constraints, and response construction
 
 Database integration run:
 
@@ -32,10 +33,13 @@ The database name must contain `test`. The integration test drops and recreates 
 The database suite checks:
 
 - duplicate usernames are rejected
+- stored passwords are SHA-256 hashes instead of plaintext
+- SQL-injection-shaped login input does not bypass authentication
 - invalid friend foreign keys are rejected
 - reciprocal friend rows are created together
 - duplicate friendships do not create extra rows
 - half-friendship rollback does not create a second inconsistent row
 - historical messages are ordered and use delimiter-safe timestamps
+- delimiter-unsafe message content is rejected before persistence
 - invalid message foreign keys do not persist
 - deleting a user cascades related messages and friendships

@@ -62,6 +62,30 @@ static long scalar_long(const char *sql) {
     return value;
 }
 
+static void scalar_text(const char *sql, char *out, size_t out_size) {
+    MYSQL_RES *res;
+    MYSQL_ROW row;
+
+    if (out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    if (mysql_query(db_conn, sql) != 0) {
+        fprintf(stderr, "SQL failed: %s\nError: %s\n", sql, mysql_error(db_conn));
+        exit(3);
+    }
+
+    res = mysql_store_result(db_conn);
+    assert(res != NULL);
+
+    row = mysql_fetch_row(res);
+    assert(row != NULL && row[0] != NULL);
+    snprintf(out, out_size, "%s", row[0]);
+
+    mysql_free_result(res);
+}
+
 static void reset_schema(void) {
     exec_sql("SET FOREIGN_KEY_CHECKS = 0");
     exec_sql("DROP TABLE IF EXISTS friends");
@@ -73,11 +97,34 @@ static void reset_schema(void) {
 static void test_registration_and_friend_constraints(void) {
     int alice = register_user("alice_test", "pw", "Alice");
     int bob = register_user("bob_test", "pw", "Bob");
+    char stored_password[128];
+    char nickname[50];
+    int login_id = 0;
 
     assert(alice > 0);
     assert(bob > 0);
     assert(register_user("alice_test", "pw2", "Duplicate") == -1);
     assert(scalar_long("SELECT COUNT(*) FROM users WHERE username='alice_test'") == 1);
+
+    scalar_text("SELECT password FROM users WHERE username='alice_test'", stored_password, sizeof(stored_password));
+    assert(strcmp(stored_password, "pw") != 0);
+    assert(strlen(stored_password) == 64);
+    assert(strspn(stored_password, "0123456789abcdefABCDEF") == 64);
+
+    assert(login_user("alice_test", "pw", nickname, &login_id) == 0);
+    assert(login_id == alice);
+    assert(strcmp(nickname, "Alice") == 0);
+    assert(login_user("alice_test", "wrong", nickname, &login_id) == -1);
+    assert(login_user("alice_test' OR '1'='1", "pw", nickname, &login_id) == -1);
+
+    assert(register_user("unsafe,user", "pw", "Unsafe") == -1);
+    assert(register_user("unsafe_colon", "pw:bad", "Unsafe") == -1);
+    assert(register_user("unsafe_semicolon", "pw", "Bad;Name") == -1);
+
+    int quoted = register_user("quoted_user' OR '1'='1", "quoted_pw", "Quoted");
+    assert(quoted > 0);
+    assert(login_user("quoted_user' OR '1'='1", "quoted_pw", nickname, &login_id) == 0);
+    assert(login_id == quoted);
 
     assert(add_friend(alice, 999999) == -1);
     assert(scalar_long("SELECT COUNT(*) FROM friends") == 0);
@@ -85,6 +132,9 @@ static void test_registration_and_friend_constraints(void) {
     assert(add_friend(alice, bob) == 0);
     assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
                        "(user_id = 1 AND friend_id = 2) OR (user_id = 2 AND friend_id = 1)") == 2);
+    assert(are_friends(alice, bob) == 1);
+    assert(are_friends(alice, quoted) == 0);
+    assert(are_friends(alice, alice) == 0);
 
     assert(add_friend(alice, bob) == -1);
     assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
@@ -115,7 +165,14 @@ static void test_messages_timestamp_and_cascade(void) {
     assert(strstr(messages, "older message") < strstr(messages, "newer message"));
 
     long before = scalar_long("SELECT COUNT(*) FROM messages");
-    save_message(999999, 2, "invalid sender should not persist");
+    assert(save_message(1, 2, "prepared quote ' and comma, ok") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM messages") == before + 1);
+
+    before = scalar_long("SELECT COUNT(*) FROM messages");
+    assert(save_message(1, 2, "invalid:delimiter") == -1);
+    assert(scalar_long("SELECT COUNT(*) FROM messages") == before);
+
+    assert(save_message(999999, 2, "invalid sender should not persist") == -1);
     assert(scalar_long("SELECT COUNT(*) FROM messages") == before);
 
     exec_sql("DELETE FROM users WHERE id = 1");

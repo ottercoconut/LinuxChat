@@ -28,6 +28,33 @@ pthread_mutex_t clients_mutex;
 
 int client_count = 0;
 
+int is_protocol_safe_text(const char *text, int allow_comma) {
+    if (text == NULL || text[0] == '\0') {
+        return 0;
+    }
+
+    for (const unsigned char *ptr = (const unsigned char *)text; *ptr != '\0'; ptr++) {
+        if (*ptr < 32 || *ptr == ':' || *ptr == ';' || (!allow_comma && *ptr == ',')) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static void bind_string_param(MYSQL_BIND *bind, const char *value, unsigned long *length) {
+    *length = (unsigned long)strlen(value);
+    bind->buffer_type = MYSQL_TYPE_STRING;
+    bind->buffer = (char *)value;
+    bind->buffer_length = *length;
+    bind->length = length;
+}
+
+static void bind_int_param(MYSQL_BIND *bind, int *value) {
+    bind->buffer_type = MYSQL_TYPE_LONG;
+    bind->buffer = value;
+}
+
 int append_protocol_record(char *result, size_t result_size,
                            const char *field1, const char *field2, const char *field3) {
     if (result_size == 0) {
@@ -116,58 +143,123 @@ void create_tables(void) {
 }
 
 int register_user(const char *username, const char *password, const char *nickname) {
-    char query[500];
-    snprintf(query, sizeof(query), "INSERT INTO users (username, password, nickname) VALUES ('%s', '%s', '%s')",
-             username, password, nickname);
-    
-    pthread_mutex_lock(&db_mutex);
-    if (mysql_query(db_conn, query) != 0) {
-        fprintf(stderr, "注册失败: %s\n", mysql_error(db_conn));
-        pthread_mutex_unlock(&db_mutex);
+    const char *statement =
+        "INSERT INTO users (username, password, nickname) VALUES (?, SHA2(?, 256), ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[3];
+    unsigned long lengths[3];
+    int user_id = -1;
+
+    if (!is_protocol_safe_text(username, 0) ||
+        !is_protocol_safe_text(password, 0) ||
+        !is_protocol_safe_text(nickname, 0)) {
         return -1;
     }
 
-    int user_id = (int)mysql_insert_id(db_conn);
+    memset(params, 0, sizeof(params));
+    bind_string_param(&params[0], username, &lengths[0]);
+    bind_string_param(&params[1], password, &lengths[1]);
+    bind_string_param(&params[2], nickname, &lengths[2]);
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化注册语句失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "注册失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    user_id = (int)mysql_insert_id(db_conn);
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
     pthread_mutex_unlock(&db_mutex);
     return user_id;
 }
 
 int login_user(const char *username, const char *password, char *nickname, int *user_id) {
-    char query[500];
-    snprintf(query, sizeof(query), "SELECT id, nickname FROM users WHERE username='%s' AND password='%s'",
-             username, password);
+    const char *statement =
+        "SELECT id, nickname FROM users WHERE username = ? AND password = SHA2(?, 256)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[2];
+    MYSQL_BIND results[2];
+    unsigned long param_lengths[2];
+    unsigned long nickname_length = 0;
+    char nickname_buffer[50] = "";
+    int found_user_id = 0;
+    int status = -1;
+
+    if (!is_protocol_safe_text(username, 0) ||
+        !is_protocol_safe_text(password, 0) ||
+        nickname == NULL ||
+        user_id == NULL) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_string_param(&params[0], username, &param_lengths[0]);
+    bind_string_param(&params[1], password, &param_lengths[1]);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_LONG;
+    results[0].buffer = &found_user_id;
+    results[1].buffer_type = MYSQL_TYPE_STRING;
+    results[1].buffer = nickname_buffer;
+    results[1].buffer_length = sizeof(nickname_buffer) - 1;
+    results[1].length = &nickname_length;
 
     pthread_mutex_lock(&db_mutex);
-    if (mysql_query(db_conn, query) != 0) {
-        fprintf(stderr, "登录查询失败: %s\n", mysql_error(db_conn));
-        pthread_mutex_unlock(&db_mutex);
-        return -1;
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化登录语句失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
     }
-    
-    MYSQL_RES *result = mysql_store_result(db_conn);
-    if (result == NULL) {
-        fprintf(stderr, "获取结果失败: %s\n", mysql_error(db_conn));
-        pthread_mutex_unlock(&db_mutex);
-        return -1;
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "登录查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
     }
-    
-    MYSQL_ROW row = mysql_fetch_row(result);
-    if (row != NULL) {
-        *user_id = atoi(row[0]);
-        strncpy(nickname, row[1], 49);
+
+    int fetch_status = mysql_stmt_fetch(stmt);
+    if (fetch_status == 0 || fetch_status == MYSQL_DATA_TRUNCATED) {
+        size_t copy_length = nickname_length < 49 ? nickname_length : 49;
+        nickname_buffer[copy_length] = '\0';
+        if (!is_protocol_safe_text(nickname_buffer, 0)) {
+            goto cleanup;
+        }
+
+        *user_id = found_user_id;
+        strncpy(nickname, nickname_buffer, 49);
         nickname[49] = '\0';
-        mysql_free_result(result);
-        pthread_mutex_unlock(&db_mutex);
-        return 0;
+        status = 0;
     }
-    
-    mysql_free_result(result);
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
     pthread_mutex_unlock(&db_mutex);
-    return -1;
+    return status;
 }
 
 int add_friend(int user_id, int friend_id) {
     char query[500];
+
+    if (user_id <= 0 || friend_id <= 0 || user_id == friend_id) {
+        return -1;
+    }
+
     snprintf(query, sizeof(query), "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
              user_id, friend_id);
     
@@ -215,6 +307,10 @@ void get_friends(int user_id, char *result, size_t result_size) {
         return;
     }
     result[0] = '\0';
+    if (user_id <= 0) {
+        return;
+    }
+
     pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "获取好友列表失败: %s\n", mysql_error(db_conn));
@@ -239,6 +335,38 @@ void get_friends(int user_id, char *result, size_t result_size) {
     pthread_mutex_unlock(&db_mutex);
 }
 
+int are_friends(int user_id, int friend_id) {
+    char query[300];
+    int result = 0;
+
+    if (user_id <= 0 || friend_id <= 0 || user_id == friend_id) {
+        return 0;
+    }
+
+    snprintf(query, sizeof(query),
+             "SELECT COUNT(*) FROM friends WHERE user_id = %d AND friend_id = %d AND status = 1",
+             user_id, friend_id);
+
+    pthread_mutex_lock(&db_mutex);
+    if (mysql_query(db_conn, query) != 0) {
+        fprintf(stderr, "好友关系查询失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
+        return 0;
+    }
+
+    MYSQL_RES *res = mysql_store_result(db_conn);
+    if (res != NULL) {
+        MYSQL_ROW row = mysql_fetch_row(res);
+        if (row != NULL && row[0] != NULL) {
+            result = atoi(row[0]) > 0;
+        }
+        mysql_free_result(res);
+    }
+
+    pthread_mutex_unlock(&db_mutex);
+    return result;
+}
+
 void get_messages(int user_id, int friend_id, char *result, size_t result_size) {
     char query[500];
     snprintf(query, sizeof(query), "SELECT m.content, DATE_FORMAT(m.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s'), u.nickname FROM messages m "
@@ -251,6 +379,10 @@ void get_messages(int user_id, int friend_id, char *result, size_t result_size) 
         return;
     }
     result[0] = '\0';
+    if (user_id <= 0 || friend_id <= 0) {
+        return;
+    }
+
     pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "获取消息失败: %s\n", mysql_error(db_conn));
@@ -275,16 +407,49 @@ void get_messages(int user_id, int friend_id, char *result, size_t result_size) 
     pthread_mutex_unlock(&db_mutex);
 }
 
-void save_message(int sender_id, int receiver_id, const char *content) {
-    char query[1000];
-    snprintf(query, sizeof(query), "INSERT INTO messages (sender_id, receiver_id, content) VALUES (%d, %d, '%s')",
-             sender_id, receiver_id, content);
+int save_message(int sender_id, int receiver_id, const char *content) {
+    const char *statement =
+        "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[3];
+    unsigned long content_length;
+    int status = -1;
+    int bound_sender_id = sender_id;
+    int bound_receiver_id = receiver_id;
+
+    if (sender_id <= 0 ||
+        receiver_id <= 0 ||
+        !is_protocol_safe_text(content, 1)) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_sender_id);
+    bind_int_param(&params[1], &bound_receiver_id);
+    bind_string_param(&params[2], content, &content_length);
 
     pthread_mutex_lock(&db_mutex);
-    if (mysql_query(db_conn, query) != 0) {
-        fprintf(stderr, "保存消息失败: %s\n", mysql_error(db_conn));
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化消息语句失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "保存消息失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    status = 0;
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
     }
     pthread_mutex_unlock(&db_mutex);
+    return status;
 }
 
 void broadcast_message(int sender_id, const char *message) {
@@ -329,7 +494,7 @@ void *handle_client(void *arg) {
         
         if (strncmp(buffer, "REGISTER:", 9) == 0) {
             char username[50], password[50], nickname[50];
-            if (sscanf(buffer + 9, "%49[^,],%49[^,],%49s", username, password, nickname) == 3) {
+            if (sscanf(buffer + 9, "%49[^,],%49[^,],%49[^\n]", username, password, nickname) == 3) {
                 int user_id = register_user(username, password, nickname);
                 if (user_id > 0) {
                     snprintf(response, sizeof(response), "REGISTER_SUCCESS:%d", user_id);
@@ -345,7 +510,7 @@ void *handle_client(void *arg) {
             char username[50], password[50], nickname[50];
             int user_id;
 
-            if (sscanf(buffer + 6, "%49[^,],%49s", username, password) == 2 &&
+            if (sscanf(buffer + 6, "%49[^,],%49[^\n]", username, password) == 2 &&
                 login_user(username, password, nickname, &user_id) == 0) {
                 client->user_id = user_id;
                 strncpy(client->username, username, sizeof(client->username) - 1);
@@ -360,9 +525,14 @@ void *handle_client(void *arg) {
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "ADDFRIEND:", 10) == 0) {
-            int user_id, friend_id;
-            if (sscanf(buffer + 10, "%d,%d", &user_id, &friend_id) == 2 &&
-                add_friend(user_id, friend_id) == 0) {
+            int requested_user_id, friend_id;
+            if (client->user_id > 0 &&
+                sscanf(buffer + 10, "%d,%d", &requested_user_id, &friend_id) == 2 &&
+                add_friend(client->user_id, friend_id) == 0) {
+                if (requested_user_id != client->user_id) {
+                    printf("忽略客户端声明的好友操作用户ID: %d，使用登录会话ID: %d\n",
+                           requested_user_id, client->user_id);
+                }
                 snprintf(response, sizeof(response), "ADDFRIEND_SUCCESS");
             } else {
                 snprintf(response, sizeof(response), "ADDFRIEND_FAILED");
@@ -370,10 +540,14 @@ void *handle_client(void *arg) {
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "FRIENDS:", 8) == 0) {
-            int user_id;
-            if (sscanf(buffer + 8, "%d", &user_id) == 1) {
+            int requested_user_id;
+            if (client->user_id > 0 && sscanf(buffer + 8, "%d", &requested_user_id) == 1) {
                 char friends[BUFFER_SIZE];
-                get_friends(user_id, friends, sizeof(friends));
+                if (requested_user_id != client->user_id) {
+                    printf("忽略客户端声明的好友列表用户ID: %d，使用登录会话ID: %d\n",
+                           requested_user_id, client->user_id);
+                }
+                get_friends(client->user_id, friends, sizeof(friends));
                 snprintf(response, sizeof(response), "FRIENDS_LIST:%s", friends);
             } else {
                 snprintf(response, sizeof(response), "FRIENDS_LIST:");
@@ -381,10 +555,16 @@ void *handle_client(void *arg) {
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strncmp(buffer, "MESSAGES:", 9) == 0) {
-            int user_id, friend_id;
-            if (sscanf(buffer + 9, "%d,%d", &user_id, &friend_id) == 2) {
+            int requested_user_id, friend_id;
+            if (client->user_id > 0 &&
+                sscanf(buffer + 9, "%d,%d", &requested_user_id, &friend_id) == 2 &&
+                are_friends(client->user_id, friend_id)) {
                 char messages[BUFFER_SIZE];
-                get_messages(user_id, friend_id, messages, sizeof(messages) - strlen("MESSAGES_LIST:"));
+                if (requested_user_id != client->user_id) {
+                    printf("忽略客户端声明的消息查询用户ID: %d，使用登录会话ID: %d\n",
+                           requested_user_id, client->user_id);
+                }
+                get_messages(client->user_id, friend_id, messages, sizeof(messages) - strlen("MESSAGES_LIST:"));
                 snprintf(response, sizeof(response), "MESSAGES_LIST:%s", messages);
             } else {
                 snprintf(response, sizeof(response), "MESSAGES_LIST:");
@@ -412,7 +592,11 @@ void *handle_client(void *arg) {
                 printf("忽略客户端声明的发送者ID: %d，使用登录会话ID: %d\n",
                        requested_sender_id, sender_id);
             }
-            save_message(sender_id, receiver_id, content);
+            if (!are_friends(sender_id, receiver_id) || save_message(sender_id, receiver_id, content) != 0) {
+                snprintf(response, sizeof(response), "SEND_FAILED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
 
             snprintf(response, sizeof(response), "NEW_MESSAGE:%d:%s:%s", sender_id, client->nickname, content);
             send_to_user(receiver_id, response);
