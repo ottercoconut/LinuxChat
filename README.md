@@ -138,42 +138,53 @@ cd c-native/client
 
 ## 测试验证
 
-项目提供了 P0/P1 聊天链路回归测试脚本，用于验证客户端和服务端可以编译，并检查已修复的关键路径。
-
-P0 回归测试覆盖 issue #3 中修复的登录后聊天主链路：
+项目提供了完整测试入口，用于验证客户端和服务端可以编译，并覆盖服务端状态、协议边界、源码契约和可选的真实数据库一致性检查：
 
 ```bash
-./tests/run_p0_tests.sh
+./tests/run_all_tests.sh
 ```
 
-P1 回归测试覆盖 issue #5 中修复的稳定性和数据正确性问题。该脚本会先运行 P0 回归测试，再运行 P1 专项测试：
+默认测试不要求运行 MySQL 服务。它覆盖：
+
+- 客户端和服务端在当前依赖下通过 `-Wall -Wextra -Wpedantic` 编译
+- 服务端在线会话状态同步和定向发送
+- 协议记录拼接的边界和截断行为
+- 客户端 GTK idle 回调、页面切换和限长解析契约
+- 服务端数据库互斥、事务、级联外键、唯一约束和响应构造契约
+- `init.sql` 的关键约束和可重复导入特性
+
+如果需要运行真实 MySQL 集成测试，需要准备一个可被测试销毁的数据库，数据库名必须包含 `test`：
 
 ```bash
-./tests/run_p1_tests.sh
+LINUXCHAT_RUN_DB_TESTS=1 \
+LINUXCHAT_TEST_DB_HOST=localhost \
+LINUXCHAT_TEST_DB_USER=chat_test_user \
+LINUXCHAT_TEST_DB_PASSWORD=chat_test_password \
+LINUXCHAT_TEST_DB_NAME=linuxchat_test \
+./tests/run_all_tests.sh --with-db
 ```
+
+数据库集成测试会删除并重建测试库中的 `users`、`messages`、`friends` 三张表，用于检查：
+
+- 重复用户名被拒绝
+- 无效外键不会写入好友或消息
+- 好友关系双向插入具备事务一致性
+- 半边好友关系不会在失败重试时变成不一致的双边状态
+- 历史消息按时间排序，且时间戳不会破坏协议分隔
+- 删除用户会级联清理相关好友和消息
 
 脚本会自动探测 `mysql_config`。如果本机 MySQL 安装路径不在常见位置，可以显式指定：
 
 ```bash
-MYSQL_CONFIG=/path/to/mysql_config ./tests/run_p1_tests.sh
+MYSQL_CONFIG=/path/to/mysql_config ./tests/run_all_tests.sh
 ```
 
-当前 P0 覆盖范围：
+原有 P0/P1 回归入口仍然保留：
 
-- 客户端和服务端在当前依赖下通过 `-Wall -Wextra -Wpedantic` 编译
-- 客户端登录成功后通过 `GtkStack` 切换到聊天页
-- 客户端接收线程使用 GTK idle 回调并复制网络缓冲区
-- 服务端登录后同步在线用户数组
-- 服务端发送消息时使用登录会话中的用户 ID 和昵称
-
-当前 P1 覆盖范围：
-
-- 服务端全局 MySQL 连接通过互斥锁串行访问
-- 历史消息时间戳格式避免使用 `:`，防止客户端字段解析错位
-- 好友列表和历史消息拼接使用容量保护
-- 历史消息响应不再把大缓冲区写入 1KB `response`
-- 服务端 socket 创建失败判断使用 `< 0`
-- 服务端响应构造和命令解析减少无界缓冲区写入风险
+```bash
+./tests/run_p0_tests.sh
+./tests/run_p1_tests.sh
+```
 
 ## 通信协议
 

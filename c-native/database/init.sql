@@ -31,13 +31,13 @@ CREATE TABLE IF NOT EXISTS friends (
     UNIQUE KEY unique_friend (user_id, friend_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO users (username, password, nickname) VALUES 
+INSERT IGNORE INTO users (username, password, nickname) VALUES
 ('admin', 'admin123', '管理员'),
 ('user1', 'user123', '用户1'),
 ('user2', 'user123', '用户2'),
 ('user3', 'user123', '用户3');
 
-INSERT INTO friends (user_id, friend_id, status) VALUES 
+INSERT IGNORE INTO friends (user_id, friend_id, status) VALUES
 (1, 2, 1),
 (1, 3, 1),
 (1, 4, 1),

@@ -88,8 +88,8 @@ void create_tables(void) {
                             "receiver_id INT NOT NULL,"
                             "content TEXT NOT NULL,"
                             "timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
-                            "FOREIGN KEY(sender_id) REFERENCES users(id),"
-                            "FOREIGN KEY(receiver_id) REFERENCES users(id))";
+                            "FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE,"
+                            "FOREIGN KEY(receiver_id) REFERENCES users(id) ON DELETE CASCADE)";
     
     char *create_friends = "CREATE TABLE IF NOT EXISTS friends ("
                            "id INT AUTO_INCREMENT PRIMARY KEY,"
@@ -97,8 +97,9 @@ void create_tables(void) {
                            "friend_id INT NOT NULL,"
                            "status INT DEFAULT 0,"
                            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
-                           "FOREIGN KEY(user_id) REFERENCES users(id),"
-                           "FOREIGN KEY(friend_id) REFERENCES users(id))";
+                           "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,"
+                           "FOREIGN KEY(friend_id) REFERENCES users(id) ON DELETE CASCADE,"
+                           "UNIQUE KEY unique_friend (user_id, friend_id))";
     
     pthread_mutex_lock(&db_mutex);
     if (mysql_query(db_conn, create_users) != 0) {
@@ -171,8 +172,15 @@ int add_friend(int user_id, int friend_id) {
              user_id, friend_id);
     
     pthread_mutex_lock(&db_mutex);
+    if (mysql_query(db_conn, "START TRANSACTION") != 0) {
+        fprintf(stderr, "开始好友事务失败: %s\n", mysql_error(db_conn));
+        pthread_mutex_unlock(&db_mutex);
+        return -1;
+    }
+
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "添加好友失败: %s\n", mysql_error(db_conn));
+        mysql_query(db_conn, "ROLLBACK");
         pthread_mutex_unlock(&db_mutex);
         return -1;
     }
@@ -182,9 +190,18 @@ int add_friend(int user_id, int friend_id) {
     
     if (mysql_query(db_conn, query) != 0) {
         fprintf(stderr, "添加好友失败: %s\n", mysql_error(db_conn));
+        mysql_query(db_conn, "ROLLBACK");
         pthread_mutex_unlock(&db_mutex);
         return -1;
     }
+
+    if (mysql_query(db_conn, "COMMIT") != 0) {
+        fprintf(stderr, "提交好友事务失败: %s\n", mysql_error(db_conn));
+        mysql_query(db_conn, "ROLLBACK");
+        pthread_mutex_unlock(&db_mutex);
+        return -1;
+    }
+
     pthread_mutex_unlock(&db_mutex);
     return 0;
 }
