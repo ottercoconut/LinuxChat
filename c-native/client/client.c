@@ -38,6 +38,20 @@ void send_message_to_server(const char *msg) {
     }
 }
 
+gboolean is_client_protocol_safe(const char *text, gboolean allow_comma) {
+    if (text == NULL || text[0] == '\0') {
+        return FALSE;
+    }
+
+    for (const unsigned char *ptr = (const unsigned char *)text; *ptr != '\0'; ptr++) {
+        if (*ptr < 32 || *ptr == ':' || *ptr == ';' || (!allow_comma && *ptr == ',')) {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
 void connect_to_server(void) {
     struct sockaddr_in server_addr;
 
@@ -88,6 +102,16 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
         gtk_label_set_text(GTK_LABEL(status_label), "请填写完整信息");
         return;
     }
+    if (strlen(username) >= 50 || strlen(password) >= 50 || strlen(nickname) >= 50) {
+        gtk_label_set_text(GTK_LABEL(status_label), "用户名、密码和昵称不能超过49字节");
+        return;
+    }
+    if (!is_client_protocol_safe(username, FALSE) ||
+        !is_client_protocol_safe(password, FALSE) ||
+        !is_client_protocol_safe(nickname, FALSE)) {
+        gtk_label_set_text(GTK_LABEL(status_label), "输入不能包含逗号、冒号、分号或换行");
+        return;
+    }
     
     connect_to_server();
     if (sockfd < 0) {
@@ -96,7 +120,12 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
     }
     
     char msg[BUFFER_SIZE];
-    sprintf(msg, "REGISTER:%s,%s,%s", username, password, nickname);
+    if (snprintf(msg, sizeof(msg), "REGISTER:%s,%s,%s", username, password, nickname) >= (int)sizeof(msg)) {
+        gtk_label_set_text(GTK_LABEL(status_label), "注册信息过长");
+        close(sockfd);
+        sockfd = -1;
+        return;
+    }
     send_message_to_server(msg);
     
     char buffer[BUFFER_SIZE];
@@ -145,6 +174,15 @@ void on_login_clicked(GtkButton *button, gpointer user_data) {
         gtk_label_set_text(GTK_LABEL(status_label), "请填写用户名和密码");
         return;
     }
+    if (strlen(username) >= 50 || strlen(password) >= 50) {
+        gtk_label_set_text(GTK_LABEL(status_label), "用户名和密码不能超过49字节");
+        return;
+    }
+    if (!is_client_protocol_safe(username, FALSE) ||
+        !is_client_protocol_safe(password, FALSE)) {
+        gtk_label_set_text(GTK_LABEL(status_label), "用户名和密码不能包含逗号、冒号、分号或换行");
+        return;
+    }
     
     connect_to_server();
     if (sockfd < 0) {
@@ -153,15 +191,20 @@ void on_login_clicked(GtkButton *button, gpointer user_data) {
     }
     
     char msg[BUFFER_SIZE];
-    sprintf(msg, "LOGIN:%s,%s", username, password);
+    if (snprintf(msg, sizeof(msg), "LOGIN:%s,%s", username, password) >= (int)sizeof(msg)) {
+        gtk_label_set_text(GTK_LABEL(status_label), "登录信息过长");
+        close(sockfd);
+        sockfd = -1;
+        return;
+    }
     send_message_to_server(msg);
     
     char buffer[BUFFER_SIZE];
     memset(buffer, 0, BUFFER_SIZE);
     recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
     
-    if (strncmp(buffer, "LOGIN_SUCCESS:", 14) == 0) {
-        sscanf(buffer + 14, "%d:%[^:]:%s", &current_user_id, current_username, current_nickname);
+    if (strncmp(buffer, "LOGIN_SUCCESS:", 14) == 0 &&
+        sscanf(buffer + 14, "%d:%49[^:]:%49[^\n]", &current_user_id, current_username, current_nickname) == 3) {
         gtk_label_set_text(GTK_LABEL(status_label), "登录成功");
 
         if (start_receive_thread() != 0) {
@@ -174,10 +217,10 @@ void on_login_clicked(GtkButton *button, gpointer user_data) {
         gtk_stack_set_visible_child(GTK_STACK(main_stack), chat_window);
         
         char title[100];
-        sprintf(title, "Linux聊天工具 - %s", current_nickname);
+        snprintf(title, sizeof(title), "Linux聊天工具 - %s", current_nickname);
         gtk_window_set_title(GTK_WINDOW(window), title);
         
-        sprintf(msg, "FRIENDS:%d", current_user_id);
+        snprintf(msg, sizeof(msg), "FRIENDS:%d", current_user_id);
         send_message_to_server(msg);
     } else {
         gtk_label_set_text(GTK_LABEL(status_label), "登录失败，用户名或密码错误");
@@ -195,9 +238,21 @@ void on_send_clicked(GtkButton *button, gpointer user_data) {
     if (strlen(text) == 0 || selected_friend_id < 0) {
         return;
     }
+    if (strlen(text) >= 900) {
+        gtk_label_set_text(GTK_LABEL(status_label), "消息内容过长");
+        return;
+    }
+    if (!is_client_protocol_safe(text, TRUE)) {
+        gtk_label_set_text(GTK_LABEL(status_label), "消息不能包含冒号、分号或换行");
+        return;
+    }
     
     char msg[BUFFER_SIZE];
-    sprintf(msg, "SEND:%d,%d,%s", current_user_id, selected_friend_id, text);
+    if (snprintf(msg, sizeof(msg), "SEND:%d,%d,%s", current_user_id, selected_friend_id, text) >=
+        (int)sizeof(msg)) {
+        gtk_label_set_text(GTK_LABEL(status_label), "消息内容过长");
+        return;
+    }
     send_message_to_server(msg);
     
     gtk_entry_set_text(GTK_ENTRY(message_entry), "");
@@ -217,7 +272,7 @@ void on_friend_selected(GtkTreeView *tree_view, gpointer user_data) {
         selected_friend_id = friend_id;
         
         char title[100];
-        sprintf(title, "与 %s 聊天", nickname);
+        snprintf(title, sizeof(title), "与 %s 聊天", nickname);
         gtk_label_set_text(GTK_LABEL(g_object_get_data(G_OBJECT(user_data), "chat_title")), title);
         
         g_free(nickname);
@@ -225,7 +280,7 @@ void on_friend_selected(GtkTreeView *tree_view, gpointer user_data) {
         gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view)), "", -1);
         
         char msg[BUFFER_SIZE];
-        sprintf(msg, "MESSAGES:%d,%d", current_user_id, selected_friend_id);
+        snprintf(msg, sizeof(msg), "MESSAGES:%d,%d", current_user_id, selected_friend_id);
         send_message_to_server(msg);
     }
 }
@@ -255,7 +310,7 @@ void on_add_friend_clicked(GtkButton *button, gpointer user_data) {
         
         if (friend_id > 0 && friend_id != current_user_id) {
             char msg[BUFFER_SIZE];
-            sprintf(msg, "ADDFRIEND:%d,%d", current_user_id, friend_id);
+            snprintf(msg, sizeof(msg), "ADDFRIEND:%d,%d", current_user_id, friend_id);
             send_message_to_server(msg);
         }
     }
@@ -344,7 +399,7 @@ gboolean refresh_friends_after_add(gpointer data) {
 
     if (current_user_id > 0) {
         char msg[BUFFER_SIZE];
-        sprintf(msg, "FRIENDS:%d", current_user_id);
+        snprintf(msg, sizeof(msg), "FRIENDS:%d", current_user_id);
         send_message_to_server(msg);
     }
 
