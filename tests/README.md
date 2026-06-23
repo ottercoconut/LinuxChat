@@ -14,8 +14,8 @@ The default suite does not require a running MySQL server. It covers:
 - server session state updates
 - server message routing with socket pairs
 - protocol record bounds and truncation behavior
-- P2 security contracts for protocol delimiter rejection and pre-database validation
-- source-level contracts for GTK idle callbacks, bounded parsing, prepared statements, password hashing, session authorization, database locking, schema constraints, and response construction
+- security checks for protocol delimiter rejection and pre-database validation
+- source-level checks for GTK idle callbacks, bounded parsing, prepared statements, password hashing, session authorization, database locking, schema constraints, group protocol handling, block handling, offline-message handling, and response construction
 
 Database integration run:
 
@@ -28,7 +28,7 @@ LINUXCHAT_TEST_DB_NAME=linuxchat_test \
 ./tests/run_all_tests.sh --with-db
 ```
 
-The database name must contain `test`. The integration test drops and recreates the `users`, `messages`, and `friends` tables inside that database.
+The database name must contain `test`. The integration test drops and recreates the `users`, `messages`, `friends`, `friend_blocks`, `chat_groups`, `group_members`, `group_messages`, and `group_message_deliveries` tables inside that database.
 
 The database suite checks:
 
@@ -39,7 +39,13 @@ The database suite checks:
 - reciprocal friend rows are created together
 - duplicate friendships do not create extra rows
 - half-friendship rollback does not create a second inconsistent row
+- user blocks prevent private-message send eligibility and can be removed
+- group creation stores the owner and initial members
+- duplicate group members do not create extra rows
+- non-members cannot read group members/history or send group messages
+- group messages persist and create per-member delivery rows
+- private and group offline-message summaries clear after history is opened
 - historical messages are ordered and use delimiter-safe timestamps
 - delimiter-unsafe message content is rejected before persistence
 - invalid message foreign keys do not persist
-- deleting a user cascades related messages and friendships
+- deleting a user cascades related messages, friendships, groups, group messages, and delivery rows

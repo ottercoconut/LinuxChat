@@ -52,6 +52,20 @@ static void test_online_session_update(void) {
     assert(strcmp(clients[1].username, "alice") == 0);
 }
 
+static void test_online_lookup_uses_session_state(void) {
+    reset_client_state();
+
+    clients[0].sockfd = 41;
+    clients[0].user_id = 10;
+    clients[1].sockfd = 42;
+    clients[1].user_id = -1;
+    client_count = 2;
+
+    assert(is_user_online(10) == 1);
+    assert(is_user_online(11) == 0);
+    assert(is_user_online(0) == 0);
+}
+
 static void test_send_to_user_targets_only_matching_user(void) {
     int alice_pair[2];
     int bob_pair[2];
@@ -88,6 +102,7 @@ int main(void) {
 
     test_protocol_record_bounds();
     test_online_session_update();
+    test_online_lookup_uses_session_state();
     test_send_to_user_targets_only_matching_user();
 
     pthread_mutex_destroy(&db_mutex);

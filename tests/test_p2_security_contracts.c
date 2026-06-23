@@ -23,6 +23,12 @@ int main(void) {
     assert(save_message(1, 2, "bad:content") == -1);
     assert(save_message(1, 2, "bad;content") == -1);
     assert(save_message(1, 2, "bad\ncontent") == -1);
+    assert(block_user(0, 2) == -1);
+    assert(unblock_user(1, 1) == -1);
+    assert(create_group(1, "bad:name", "2") == -1);
+    assert(create_group(1, "bad;name", "2") == -1);
+    assert(save_group_message(1, 2, "bad:group", NULL) == -1);
+    assert(save_group_message(1, 2, "bad;group", NULL) == -1);
 
     puts("P2 security contract tests passed");
     return 0;
