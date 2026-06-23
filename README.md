@@ -48,10 +48,11 @@ sudo apt update
 sudo apt install gcc make mysql-server libmysqlclient-dev libgtk-3-dev pkg-config
 ```
 
-CentOS/RHEL:
+macOS:
 
 ```bash
-sudo yum install gcc make mysql-server mysql-devel gtk3-devel pkgconfig
+brew install mysql gtk+3 pkg-config
+brew services start mysql
 ```
 
 ## 数据库初始化
@@ -81,6 +82,8 @@ mysql -u chat_user -p chat_db < c-native/database/init.sql
 mysql_real_connect(db_conn, "localhost", "chat_user", "chat_password", "chat_db", 0, NULL, 0)
 ```
 
+macOS 使用 Homebrew 安装 MySQL 后，也可以通过同样的 `mysql` 命令初始化数据库。如果本地 MySQL root 账号未设置密码，可先直接运行 `mysql -u root`，再按上面的 SQL 创建项目数据库和用户。
+
 ## 编译运行
 
 编译服务端：
@@ -88,6 +91,13 @@ mysql_real_connect(db_conn, "localhost", "chat_user", "chat_password", "chat_db"
 ```bash
 cd c-native/server
 gcc server.c -o server -lmysqlclient -lpthread
+```
+
+macOS 如果找不到 MySQL 头文件或链接库，可以改用：
+
+```bash
+cd c-native/server
+gcc server.c -o server $(mysql_config --cflags --libs) -lpthread
 ```
 
 编译客户端：
@@ -150,8 +160,10 @@ COMMAND:param1,param2,param3
 
 当前版本是课程设计/学习用途实现，已覆盖主要功能链路。后续可以继续完善：
 
-- 使用 MySQL 预处理语句替代 SQL 字符串拼接
-- 修复在线用户状态同步和客户端接收线程启动时机
-- 优化 GTK 页面切换与聊天窗口显示
-- 为通信协议增加长度字段或结构化编码
-- 增加密码哈希和更完整的输入校验
+- 服务端在线用户数组保存的是 `Client` 副本，登录后线程内状态没有同步回数组，实时转发可能找不到接收方
+- 客户端接收线程在连接建立前启动，可能因 `sockfd = -1` 直接退出，导致登录后无法持续接收消息
+- GTK 主窗口只添加了登录页，聊天页创建后没有正确加入主容器，登录后的页面切换存在显示问题
+- 服务端 `SEND` 分支通过空密码重新调用登录函数获取昵称，容易导致昵称和发送者信息异常
+- SQL 使用字符串拼接，存在注入和缓冲区风险，后续应改为 MySQL 预处理语句
+- 文本协议依赖 `:`, `,`, `;` 分隔，消息内容包含这些字符时可能解析错误
+- 密码明文保存，后续应增加密码哈希和更完整的输入校验
