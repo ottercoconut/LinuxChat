@@ -1,6 +1,6 @@
 # LinuxChat
 
-LinuxChat 是一个基于 Linux 平台的 C 语言网络即时通信工具，采用 Client/Server 架构实现。项目包含 TCP Socket 通信、多线程服务端、MySQL 数据持久化和 GTK3 图形客户端，作为 Linux 网络编程、数据库访问和图形界面开发的课程设计项目。
+LinuxChat 是一个 Linux 程序设计课程实践项目，也是一个基于 Linux 平台的 C 语言网络即时通信工具。项目采用 Client/Server 架构实现，包含 TCP Socket 通信、多线程服务端、MySQL 数据持久化和 GTK3 图形客户端。
 
 ## 功能特性
 
