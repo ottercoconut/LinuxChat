@@ -389,10 +389,72 @@ cleanup:
     return status;
 }
 
-int add_friend(int user_id, int friend_id) {
-    char query[500];
+int count_friend_relation_rows(int user_id, int friend_id) {
+    const char *statement =
+        "SELECT COUNT(*) FROM friends "
+        "WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[4];
+    MYSQL_BIND result_bind[1];
+    int bound_user_id = user_id;
+    int bound_friend_id = friend_id;
+    long long count = 0;
+    int result = -1;
 
     if (user_id <= 0 || friend_id <= 0 || user_id == friend_id) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_user_id);
+    bind_int_param(&params[1], &bound_friend_id);
+    bind_int_param(&params[2], &bound_friend_id);
+    bind_int_param(&params[3], &bound_user_id);
+
+    memset(result_bind, 0, sizeof(result_bind));
+    result_bind[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result_bind[0].buffer = &count;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化好友关系计数失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, result_bind) != 0) {
+        fprintf(stderr, "好友关系计数失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_fetch(stmt) == 0) {
+        result = (int)count;
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return result;
+}
+
+int add_friend(int user_id, int friend_id) {
+    char query[500];
+    int relation_rows;
+
+    if (user_id <= 0 || friend_id <= 0 || user_id == friend_id) {
+        return -1;
+    }
+
+    relation_rows = count_friend_relation_rows(user_id, friend_id);
+    if (relation_rows == 2) {
+        return 0;
+    }
+    if (relation_rows != 0) {
         return -1;
     }
 
@@ -574,6 +636,56 @@ int can_send_private_message(int sender_id, int receiver_id) {
     return are_friends(sender_id, receiver_id) && !has_block_between(sender_id, receiver_id);
 }
 
+int has_direct_block(int blocker_id, int blocked_id) {
+    const char *statement =
+        "SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = ? AND blocked_id = ?";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[2];
+    MYSQL_BIND result_bind[1];
+    int bound_blocker_id = blocker_id;
+    int bound_blocked_id = blocked_id;
+    long long count = 0;
+    int blocked = -1;
+
+    if (blocker_id <= 0 || blocked_id <= 0 || blocker_id == blocked_id) {
+        return -1;
+    }
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_blocker_id);
+    bind_int_param(&params[1], &bound_blocked_id);
+
+    memset(result_bind, 0, sizeof(result_bind));
+    result_bind[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result_bind[0].buffer = &count;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化精确屏蔽查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, result_bind) != 0) {
+        fprintf(stderr, "精确屏蔽关系查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_fetch(stmt) == 0) {
+        blocked = count > 0 ? 1 : 0;
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return blocked;
+}
+
 int block_user(int blocker_id, int blocked_id) {
     const char *statement =
         "INSERT INTO friend_blocks (blocker_id, blocked_id) VALUES (?, ?)";
@@ -581,9 +693,18 @@ int block_user(int blocker_id, int blocked_id) {
     MYSQL_BIND params[2];
     int bound_blocker_id = blocker_id;
     int bound_blocked_id = blocked_id;
+    int direct_block;
     int status = -1;
 
     if (blocker_id <= 0 || blocked_id <= 0 || blocker_id == blocked_id) {
+        return -1;
+    }
+
+    direct_block = has_direct_block(blocker_id, blocked_id);
+    if (direct_block == 1) {
+        return 0;
+    }
+    if (direct_block < 0) {
         return -1;
     }
 
@@ -622,9 +743,18 @@ int unblock_user(int blocker_id, int blocked_id) {
     MYSQL_BIND params[2];
     int bound_blocker_id = blocker_id;
     int bound_blocked_id = blocked_id;
+    int direct_block;
     int status = -1;
 
     if (blocker_id <= 0 || blocked_id <= 0 || blocker_id == blocked_id) {
+        return -1;
+    }
+
+    direct_block = has_direct_block(blocker_id, blocked_id);
+    if (direct_block == 0) {
+        return 0;
+    }
+    if (direct_block < 0) {
         return -1;
     }
 
@@ -646,7 +776,7 @@ int unblock_user(int blocker_id, int blocked_id) {
         goto cleanup;
     }
 
-    status = mysql_stmt_affected_rows(stmt) > 0 ? 0 : -1;
+    status = 0;
 
 cleanup:
     if (stmt != NULL) {
@@ -828,7 +958,7 @@ int add_group_member(int requester_id, int group_id, int new_member_id) {
 
     pthread_mutex_lock(&db_mutex);
     if (user_exists_locked(new_member_id)) {
-        status = insert_group_member_locked(group_id, new_member_id, 0);
+        status = insert_group_member_locked(group_id, new_member_id, 1);
     }
     pthread_mutex_unlock(&db_mutex);
     return status;
