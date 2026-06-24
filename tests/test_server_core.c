@@ -66,6 +66,18 @@ static void test_online_lookup_uses_session_state(void) {
     assert(is_user_online(0) == 0);
 }
 
+static void test_shutdown_signal_marks_server_stopped(void) {
+    server_running = 1;
+    handle_shutdown_signal(SIGINT);
+    assert(server_running == 0);
+
+    server_running = 1;
+    handle_shutdown_signal(SIGTERM);
+    assert(server_running == 0);
+
+    server_running = 1;
+}
+
 static void test_send_to_user_targets_only_matching_user(void) {
     int alice_pair[2];
     int bob_pair[2];
@@ -103,6 +115,7 @@ int main(void) {
     test_protocol_record_bounds();
     test_online_session_update();
     test_online_lookup_uses_session_state();
+    test_shutdown_signal_marks_server_stopped();
     test_send_to_user_targets_only_matching_user();
 
     pthread_mutex_destroy(&db_mutex);

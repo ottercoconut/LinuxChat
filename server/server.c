@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <signal.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -27,6 +29,27 @@ Client clients[MAX_CLIENTS];
 pthread_mutex_t clients_mutex;
 
 int client_count = 0;
+volatile sig_atomic_t server_running = 1;
+
+void handle_shutdown_signal(int signo) {
+    (void)signo;
+    server_running = 0;
+}
+
+int install_signal_handlers(void) {
+    struct sigaction action;
+
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = handle_shutdown_signal;
+    sigemptyset(&action.sa_mask);
+
+    if (sigaction(SIGINT, &action, NULL) != 0 ||
+        sigaction(SIGTERM, &action, NULL) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
 
 int is_user_online(int user_id) {
     int online = 0;
@@ -2098,6 +2121,11 @@ int main(void) {
     pthread_mutex_init(&clients_mutex, NULL);
     pthread_mutex_init(&db_mutex, NULL);
 
+    if (install_signal_handlers() != 0) {
+        perror("sigaction");
+        exit(EXIT_FAILURE);
+    }
+
     init_database();
     create_tables();
 
@@ -2132,10 +2160,13 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 
-    printf("服务器启动成功，监听端口 %d...\n", PORT);
+    printf("服务器启动成功，监听端口 %d... 按 Ctrl+C 可停止服务器\n", PORT);
 
-    while (1) {
+    while (server_running) {
         if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            if (!server_running || errno == EINTR) {
+                break;
+            }
             perror("accept");
             continue;
         }
@@ -2165,6 +2196,10 @@ int main(void) {
         pthread_detach(thread);
     }
 
+    printf("\n正在关闭服务器...\n");
+    close(server_fd);
     mysql_close(db_conn);
+    pthread_mutex_destroy(&db_mutex);
+    pthread_mutex_destroy(&clients_mutex);
     return 0;
 }
