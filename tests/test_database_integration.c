@@ -149,18 +149,23 @@ static void test_registration_and_friend_constraints(void) {
     assert(are_friends(alice, quoted) == 0);
     assert(are_friends(alice, alice) == 0);
 
-    assert(add_friend(alice, bob) == -1);
+    assert(add_friend(alice, bob) == 0);
     assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
                        "(user_id = 1 AND friend_id = 2) OR (user_id = 2 AND friend_id = 1)") == 2);
     assert(add_friend_by_username(alice, "quoted_user' OR '1'='1") == 0);
     assert(are_friends(alice, quoted) == 1);
+    assert(add_friend_by_username(alice, "quoted_user' OR '1'='1") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
+                       "(user_id = 1 AND friend_id = 3) OR (user_id = 3 AND friend_id = 1)") == 2);
 
     assert(block_user_by_username(bob, "alice_test") == 0);
     assert(has_block_between(alice, bob) == 1);
     assert(can_send_private_message(alice, bob) == 0);
-    assert(block_user_by_username(bob, "alice_test") == -1);
+    assert(block_user_by_username(bob, "alice_test") == 0);
     assert(scalar_long("SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = 2 AND blocked_id = 1") == 1);
     assert(unblock_user_by_username(bob, "alice_test") == 0);
+    assert(unblock_user_by_username(bob, "alice_test") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = 2 AND blocked_id = 1") == 0);
     assert(has_block_between(alice, bob) == 0);
     assert(can_send_private_message(alice, bob) == 1);
 }
@@ -241,10 +246,13 @@ static void test_group_chat_and_offline_consistency(void) {
     assert(strstr(members, "bob_test:Bob;") != NULL);
     assert(get_group_members(dana, group_id, members, sizeof(members)) == -1);
 
-    assert(add_group_member(1, group_id, 2) == -1);
+    assert(add_group_member(1, group_id, 2) == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 3);
     assert(add_group_member(dana, group_id, 1) == -1);
     assert(add_group_member_by_username(dana, group_id, "alice_test") == -1);
     assert(add_group_member_by_username(1, group_id, "missing_user") == -1);
+    assert(add_group_member_by_username(1, group_id, "dana_test") == 0);
+    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 4);
     assert(add_group_member_by_username(1, group_id, "dana_test") == 0);
     assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 4);
 

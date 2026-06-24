@@ -26,6 +26,10 @@ int main(void) {
 
     assert(are_friends(0, 2) == 0);
     assert(are_friends(1, 1) == 0);
+    assert(count_friend_relation_rows(0, 2) == -1);
+    assert(count_friend_relation_rows(1, 1) == -1);
+    assert(has_direct_block(0, 2) == -1);
+    assert(has_direct_block(1, 1) == -1);
 
     assert(save_message(0, 2, "valid content") == -1);
     assert(save_message(1, 2, "bad:content") == -1);
