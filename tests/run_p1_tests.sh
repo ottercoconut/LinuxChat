@@ -94,8 +94,8 @@ DYLD_LIBRARY_PATH="${RUNTIME_LIBRARY_PATH}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PA
 LD_LIBRARY_PATH="${RUNTIME_LIBRARY_PATH}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     "$TMP_DIR/test_p1_stability"
 
-CLIENT_SOURCE="$ROOT_DIR/c-native/client/client.c"
-SERVER_SOURCE="$ROOT_DIR/c-native/server/server.c"
+CLIENT_SOURCE="$ROOT_DIR/client/client.c"
+SERVER_SOURCE="$ROOT_DIR/server/server.c"
 
 assert_contains "$SERVER_SOURCE" "pthread_mutex_t db_mutex"
 assert_contains "$SERVER_SOURCE" "pthread_mutex_lock(&db_mutex)"

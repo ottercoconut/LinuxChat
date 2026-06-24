@@ -7,7 +7,7 @@
 #include <string.h>
 
 #define main linuxchat_server_main
-#include "../c-native/server/server.c"
+#include "../server/server.c"
 #undef main
 
 static const char *required_env(const char *name) {

@@ -85,12 +85,12 @@ add_rpath /usr/local/lib
 add_rpath /usr/local/opt/openssl@3/lib
 
 "$CC_BIN" -Wall -Wextra -Wpedantic \
-    "$ROOT_DIR/c-native/client/client.c" \
+    "$ROOT_DIR/client/client.c" \
     -o "$TMP_DIR/client" \
     "${GTK_FLAGS[@]}" -lpthread
 
 "$CC_BIN" -Wall -Wextra -Wpedantic \
-    "$ROOT_DIR/c-native/server/server.c" \
+    "$ROOT_DIR/server/server.c" \
     -o "$TMP_DIR/server" \
     "${MYSQL_CFLAGS[@]}" "${MYSQL_LIBS[@]}" "${MYSQL_RPATH_FLAGS[@]}" -lpthread
 
@@ -104,8 +104,8 @@ DYLD_LIBRARY_PATH="${RUNTIME_LIBRARY_PATH}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PA
 LD_LIBRARY_PATH="${RUNTIME_LIBRARY_PATH}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     "$TMP_DIR/test_server_session"
 
-CLIENT_SOURCE="$ROOT_DIR/c-native/client/client.c"
-SERVER_SOURCE="$ROOT_DIR/c-native/server/server.c"
+CLIENT_SOURCE="$ROOT_DIR/client/client.c"
+SERVER_SOURCE="$ROOT_DIR/server/server.c"
 
 assert_contains "$CLIENT_SOURCE" "gtk_stack_add_named(GTK_STACK(main_stack), login_window, \"login\")"
 assert_contains "$CLIENT_SOURCE" "gtk_stack_add_named(GTK_STACK(main_stack), chat_window, \"chat\")"

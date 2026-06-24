@@ -133,12 +133,12 @@ add_rpath /usr/local/opt/openssl@3/lib
 
 printf '== Compile checks ==\n'
 "$CC_BIN" -Wall -Wextra -Wpedantic \
-    "$ROOT_DIR/c-native/client/client.c" \
+    "$ROOT_DIR/client/client.c" \
     -o "$TMP_DIR/client" \
     "${GTK_FLAGS[@]}" -lpthread
 
 "$CC_BIN" -Wall -Wextra -Wpedantic \
-    "$ROOT_DIR/c-native/server/server.c" \
+    "$ROOT_DIR/server/server.c" \
     -o "$TMP_DIR/server" \
     "${MYSQL_CFLAGS[@]}" "${MYSQL_LIBS[@]}" "${MYSQL_RPATH_FLAGS[@]}" -lpthread
 
@@ -155,9 +155,9 @@ run_with_runtime_paths "$TMP_DIR/test_server_core"
 compile_mysql_test "$ROOT_DIR/tests/test_p2_security_contracts.c" "$TMP_DIR/test_p2_security_contracts"
 run_with_runtime_paths "$TMP_DIR/test_p2_security_contracts"
 
-CLIENT_SOURCE="$ROOT_DIR/c-native/client/client.c"
-SERVER_SOURCE="$ROOT_DIR/c-native/server/server.c"
-INIT_SQL="$ROOT_DIR/c-native/database/init.sql"
+CLIENT_SOURCE="$ROOT_DIR/client/client.c"
+SERVER_SOURCE="$ROOT_DIR/server/server.c"
+INIT_SQL="$ROOT_DIR/database/init.sql"
 
 assert_contains "$CLIENT_SOURCE" "gtk_stack_add_named(GTK_STACK(main_stack), login_window, \"login\")"
 assert_contains "$CLIENT_SOURCE" "gtk_stack_add_named(GTK_STACK(main_stack), chat_window, \"chat\")"

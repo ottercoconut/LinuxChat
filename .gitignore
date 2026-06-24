@@ -1,8 +1,7 @@
 .DS_Store
 Thumbs.db
 
-# Python / FastAPI runtime files
-linux_chat_deploy/
+# Python runtime files
 __pycache__/
 *.py[cod]
 .venv/
@@ -16,8 +15,8 @@ chat.db
 *.out
 *.so
 *.dylib
-c-native/server/server
-c-native/client/client
+server/server
+client/client
 
 # Local environment and editor files
 .env

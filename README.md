@@ -26,21 +26,22 @@ LinuxChat 是一个 Linux 程序设计课程实践项目，也是一个基于 Li
 
 ## 目录结构
 
-```mermaid
-flowchart TD
-    root["LinuxChat"]
-    root --> readme["README.md"]
-    root --> gitignore[".gitignore"]
-    root --> cnative["c-native/"]
-    cnative --> client["client/"]
-    client --> clientc["client.c"]
-    cnative --> database["database/"]
-    database --> initsql["init.sql"]
-    cnative --> docs["docs/"]
-    docs --> opdoc["操作文档.md"]
-    docs --> report["课程设计报告.md"]
-    cnative --> server["server/"]
-    server --> serverc["server.c"]
+```text
+.
+├── README.md
+├── client/
+│   └── client.c
+├── database/
+│   └── init.sql
+├── docs/
+│   ├── 操作文档.md
+│   └── 课程设计报告.md
+├── server/
+│   └── server.c
+├── tests/
+│   ├── run_p0_tests.sh
+│   └── run_p1_tests.sh
+└── .gitignore
 ```
 
 ## 环境依赖
@@ -77,10 +78,10 @@ FLUSH PRIVILEGES;
 导入初始化脚本：
 
 ```bash
-mysql -u chat_user -p chat_db < c-native/database/init.sql
+mysql -u chat_user -p chat_db < database/init.sql
 ```
 
-然后根据本机数据库配置，修改 `c-native/server/server.c` 中的 MySQL 连接参数：
+然后根据本机数据库配置，修改 `server/server.c` 中的 MySQL 连接参数：
 
 ```c
 mysql_real_connect(db_conn, "localhost", "chat_user", "chat_password", "chat_db", 0, NULL, 0)
@@ -93,21 +94,21 @@ macOS 使用 Homebrew 安装 MySQL 后，也可以通过同样的 `mysql` 命令
 编译服务端：
 
 ```bash
-cd c-native/server
+cd server
 gcc server.c -o server -lmysqlclient -lpthread
 ```
 
 macOS 如果找不到 MySQL 头文件或链接库，可以改用：
 
 ```bash
-cd c-native/server
+cd server
 gcc server.c -o server $(mysql_config --cflags --libs) -lpthread
 ```
 
 如果使用 MySQL 官网安装包且 `mysql_config` 不在 `PATH` 中，可以使用完整路径：
 
 ```bash
-cd c-native/server
+cd server
 gcc server.c -o server $(/usr/local/mysql/bin/mysql_config --cflags --libs) -lpthread
 ```
 
@@ -122,21 +123,21 @@ install_name_tool -change libcrypto.3.dylib /opt/homebrew/lib/libcrypto.3.dylib 
 编译客户端：
 
 ```bash
-cd c-native/client
+cd client
 gcc client.c -o client `pkg-config --cflags --libs gtk+-3.0` -lpthread
 ```
 
 启动服务端：
 
 ```bash
-cd c-native/server
+cd server
 ./server
 ```
 
 启动客户端：
 
 ```bash
-cd c-native/client
+cd client
 ./client
 ```
 
@@ -236,12 +237,12 @@ COMMAND:param1,param2,param3
 - `group_messages`：群聊消息内容、发送方和时间戳
 - `group_message_deliveries`：群消息按用户记录未读/已读状态
 
-完整建表脚本见 `c-native/database/init.sql`。
+完整建表脚本见 `database/init.sql`。
 
 ## 文档
 
-- `c-native/docs/操作文档.md`：环境安装、数据库配置、编译运行和使用说明
-- `c-native/docs/课程设计报告.md`：项目目标、模块划分、设计实现和测试总结
+- `docs/操作文档.md`：环境安装、数据库配置、编译运行和使用说明
+- `docs/课程设计报告.md`：项目目标、模块划分、设计实现和测试总结
 
 ## 当前状态
 
