@@ -217,7 +217,7 @@ COMMAND:param1,param2,param3
 
 | 命令 | 参数 | 说明 |
 | --- | --- | --- |
-| REGISTER | username,password,nickname | 用户注册 |
+| REGISTER | username,password,nickname | 用户注册，nickname 可为空 |
 | LOGIN | username,password | 用户登录 |
 | ADDFRIEND_USERNAME | username | 添加好友，客户端默认使用用户名 |
 | ADDFRIEND | user_id,friend_id | 添加好友，旧 ID 协议兼容 |
@@ -238,7 +238,7 @@ COMMAND:param1,param2,param3
 | OFFLINE_MESSAGES | user_id | 获取未读消息摘要 |
 | QUIT | 无 | 断开连接 |
 
-普通用户交互优先使用 `username`，服务端通过预处理语句将 `users.username` 解析为内部 `users.id`。`users.id` 是数据库主键和内部实现细节；`nickname` 只用于展示，不能作为唯一查找依据。为兼容现有客户端，`ADDFRIEND`、`FRIENDS`、`MESSAGES`、`SEND`、`GROUPS`、`SEND_GROUP`、`BLOCK_USER`、`UNBLOCK_USER` 和 `OFFLINE_MESSAGES` 仍可携带 user_id/sender_id 字段；服务端实际执行时只信任登录会话中的用户 ID。用户名、密码、昵称和群名不能包含 `,`、`:`、`;` 或换行，消息内容不能包含 `:`、`;` 或换行。
+普通用户交互优先使用 `username`，服务端通过预处理语句将 `users.username` 解析为内部 `users.id`。`users.id` 是数据库主键和内部实现细节；`nickname` 只用于展示，不能作为唯一查找依据。注册时 `nickname` 可留空，服务端会自动使用 `username` 作为昵称。为兼容现有客户端，`ADDFRIEND`、`FRIENDS`、`MESSAGES`、`SEND`、`GROUPS`、`SEND_GROUP`、`BLOCK_USER`、`UNBLOCK_USER` 和 `OFFLINE_MESSAGES` 仍可携带 user_id/sender_id 字段；服务端实际执行时只信任登录会话中的用户 ID。用户名、密码、昵称和群名不能包含 `,`、`:`、`;` 或换行，消息内容不能包含 `:`、`;` 或换行。
 
 ## 数据表
 

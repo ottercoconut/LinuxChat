@@ -13,6 +13,9 @@
 #define PORT 8888
 #define MAX_CLIENTS 100
 #define BUFFER_SIZE 1024
+#define REGISTER_ERROR_SERVER -1
+#define REGISTER_ERROR_DUPLICATE -2
+#define REGISTER_ERROR_INVALID_INPUT -3
 
 MYSQL *db_conn;
 pthread_mutex_t db_mutex;
@@ -254,18 +257,30 @@ int register_user(const char *username, const char *password, const char *nickna
     MYSQL_STMT *stmt = NULL;
     MYSQL_BIND params[3];
     unsigned long lengths[3];
-    int user_id = -1;
+    char effective_nickname[50];
+    int user_id = REGISTER_ERROR_SERVER;
 
-    if (!is_protocol_safe_text(username, 0) ||
+    if (username == NULL ||
+        password == NULL ||
+        strlen(username) >= 50 ||
+        strlen(password) >= 50 ||
+        !is_protocol_safe_text(username, 0) ||
         !is_protocol_safe_text(password, 0) ||
-        !is_protocol_safe_text(nickname, 0)) {
-        return -1;
+        (nickname != NULL && nickname[0] != '\0' &&
+         (strlen(nickname) >= 50 || !is_protocol_safe_text(nickname, 0)))) {
+        return REGISTER_ERROR_INVALID_INPUT;
+    }
+
+    if (nickname == NULL || nickname[0] == '\0') {
+        snprintf(effective_nickname, sizeof(effective_nickname), "%s", username);
+    } else {
+        snprintf(effective_nickname, sizeof(effective_nickname), "%s", nickname);
     }
 
     memset(params, 0, sizeof(params));
     bind_string_param(&params[0], username, &lengths[0]);
     bind_string_param(&params[1], password, &lengths[1]);
-    bind_string_param(&params[2], nickname, &lengths[2]);
+    bind_string_param(&params[2], effective_nickname, &lengths[2]);
 
     pthread_mutex_lock(&db_mutex);
     stmt = mysql_stmt_init(db_conn);
@@ -278,6 +293,9 @@ int register_user(const char *username, const char *password, const char *nickna
         mysql_stmt_bind_param(stmt, params) != 0 ||
         mysql_stmt_execute(stmt) != 0) {
         fprintf(stderr, "注册失败: %s\n", mysql_stmt_error(stmt));
+        if (mysql_stmt_errno(stmt) == 1062) {
+            user_id = REGISTER_ERROR_DUPLICATE;
+        }
         goto cleanup;
     }
 
@@ -1770,16 +1788,39 @@ void *handle_client(void *arg) {
         printf("收到消息: %s\n", buffer);
 
         if (strncmp(buffer, "REGISTER:", 9) == 0) {
-            char username[50], password[50], nickname[50];
-            if (sscanf(buffer + 9, "%49[^,],%49[^,],%49[^\n]", username, password, nickname) == 3) {
+            char payload[BUFFER_SIZE];
+            char *first_comma;
+            char *second_comma;
+            char *username;
+            char *password;
+            char *nickname;
+
+            snprintf(payload, sizeof(payload), "%s", buffer + 9);
+            first_comma = strchr(payload, ',');
+            if (first_comma != NULL) {
+                *first_comma = '\0';
+                second_comma = strchr(first_comma + 1, ',');
+                username = payload;
+                password = first_comma + 1;
+                if (second_comma != NULL) {
+                    *second_comma = '\0';
+                    nickname = second_comma + 1;
+                } else {
+                    nickname = "";
+                }
+
                 int user_id = register_user(username, password, nickname);
                 if (user_id > 0) {
                     snprintf(response, sizeof(response), "REGISTER_SUCCESS:%d", user_id);
+                } else if (user_id == REGISTER_ERROR_DUPLICATE) {
+                    snprintf(response, sizeof(response), "REGISTER_FAILED_DUPLICATE_USERNAME");
+                } else if (user_id == REGISTER_ERROR_INVALID_INPUT) {
+                    snprintf(response, sizeof(response), "REGISTER_FAILED_INVALID_INPUT");
                 } else {
-                    snprintf(response, sizeof(response), "REGISTER_FAILED");
+                    snprintf(response, sizeof(response), "REGISTER_FAILED_SERVER_ERROR");
                 }
             } else {
-                snprintf(response, sizeof(response), "REGISTER_FAILED");
+                snprintf(response, sizeof(response), "REGISTER_FAILED_INVALID_INPUT");
             }
             send(client->sockfd, response, strlen(response), 0);
         }

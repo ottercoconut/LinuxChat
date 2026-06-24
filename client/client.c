@@ -103,8 +103,8 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
     const char *password = gtk_entry_get_text(password_entry);
     const char *nickname = gtk_entry_get_text(nickname_entry);
 
-    if (strlen(username) == 0 || strlen(password) == 0 || strlen(nickname) == 0) {
-        gtk_label_set_text(GTK_LABEL(status_label), "请填写完整信息");
+    if (strlen(username) == 0 || strlen(password) == 0) {
+        gtk_label_set_text(GTK_LABEL(status_label), "请填写用户名和密码");
         return;
     }
     if (strlen(username) >= 50 || strlen(password) >= 50 || strlen(nickname) >= 50) {
@@ -113,7 +113,7 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
     }
     if (!is_client_protocol_safe(username, FALSE) ||
         !is_client_protocol_safe(password, FALSE) ||
-        !is_client_protocol_safe(nickname, FALSE)) {
+        (strlen(nickname) > 0 && !is_client_protocol_safe(nickname, FALSE))) {
         gtk_label_set_text(GTK_LABEL(status_label), "输入不能包含逗号、冒号、分号或换行");
         return;
     }
@@ -135,17 +135,27 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
 
     char buffer[BUFFER_SIZE];
     memset(buffer, 0, BUFFER_SIZE);
-    recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
+    int bytes_read = recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
 
-    if (strncmp(buffer, "REGISTER_SUCCESS:", 18) == 0) {
+    if (bytes_read > 0 &&
+        strncmp(buffer, "REGISTER_SUCCESS:", strlen("REGISTER_SUCCESS:")) == 0) {
         gtk_label_set_text(GTK_LABEL(status_label), "注册成功，请登录");
-        close(sockfd);
-        sockfd = -1;
-    } else {
+        gtk_entry_set_text(username_entry, "");
+        gtk_entry_set_text(password_entry, "");
+        gtk_entry_set_text(nickname_entry, "");
+    } else if (strcmp(buffer, "REGISTER_FAILED_DUPLICATE_USERNAME") == 0) {
         gtk_label_set_text(GTK_LABEL(status_label), "注册失败，用户名已存在");
-        close(sockfd);
-        sockfd = -1;
+    } else if (strcmp(buffer, "REGISTER_FAILED_INVALID_INPUT") == 0) {
+        gtk_label_set_text(GTK_LABEL(status_label), "注册失败，输入格式不正确");
+    } else if (strcmp(buffer, "REGISTER_FAILED_SERVER_ERROR") == 0 ||
+               strcmp(buffer, "REGISTER_FAILED") == 0) {
+        gtk_label_set_text(GTK_LABEL(status_label), "注册失败，请稍后重试");
+    } else {
+        gtk_label_set_text(GTK_LABEL(status_label), "注册失败，服务器无响应");
     }
+
+    close(sockfd);
+    sockfd = -1;
 }
 
 void *receive_messages(void *arg);
