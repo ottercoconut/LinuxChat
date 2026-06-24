@@ -15,7 +15,7 @@ The default suite does not require a running MySQL server. It covers:
 - server message routing with socket pairs
 - protocol record bounds and truncation behavior
 - security checks for protocol delimiter rejection and pre-database validation
-- source-level checks for GTK idle callbacks, bounded parsing, prepared statements, password hashing, session authorization, database locking, schema constraints, group protocol handling, block handling, offline-message handling, and response construction
+- source-level checks for GTK idle callbacks, bounded parsing, username-based user operations, prepared statements, password hashing, session authorization, database locking, schema constraints, group protocol handling, block handling, offline-message handling, and response construction
 
 Database integration run:
 
@@ -35,14 +35,17 @@ The database suite checks:
 - duplicate usernames are rejected
 - stored passwords are SHA-256 hashes instead of plaintext
 - SQL-injection-shaped login input does not bypass authentication
+- username lookup resolves `users.username`, rejects missing or delimiter-unsafe usernames, and does not use nicknames as identifiers
 - invalid friend foreign keys are rejected
 - reciprocal friend rows are created together
+- adding a friend by username rejects self-adds
 - duplicate friendships do not create extra rows
 - half-friendship rollback does not create a second inconsistent row
 - user blocks prevent private-message send eligibility and can be removed
 - group creation stores the owner and initial members
 - duplicate group members do not create extra rows
 - non-members cannot read group members/history or send group messages
+- adding a group member by username still authorizes with the requester session user ID
 - group messages persist and create per-member delivery rows
 - private and group offline-message summaries clear after history is opened
 - historical messages are ordered and use delimiter-safe timestamps
