@@ -106,10 +106,11 @@ static void test_registration_and_friend_constraints(void) {
     char nickname[50];
     int login_id = 0;
     int resolved_user_id = 0;
+    int no_nickname;
 
     assert(alice > 0);
     assert(bob > 0);
-    assert(register_user("alice_test", "pw2", "Duplicate") == -1);
+    assert(register_user("alice_test", "pw2", "Duplicate") == REGISTER_ERROR_DUPLICATE);
     assert(scalar_long("SELECT COUNT(*) FROM users WHERE username='alice_test'") == 1);
 
     scalar_text("SELECT password FROM users WHERE username='alice_test'", stored_password, sizeof(stored_password));
@@ -123,14 +124,20 @@ static void test_registration_and_friend_constraints(void) {
     assert(login_user("alice_test", "wrong", nickname, &login_id) == -1);
     assert(login_user("alice_test' OR '1'='1", "pw", nickname, &login_id) == -1);
 
-    assert(register_user("unsafe,user", "pw", "Unsafe") == -1);
-    assert(register_user("unsafe_colon", "pw:bad", "Unsafe") == -1);
-    assert(register_user("unsafe_semicolon", "pw", "Bad;Name") == -1);
+    assert(register_user("unsafe,user", "pw", "Unsafe") == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user("unsafe_colon", "pw:bad", "Unsafe") == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user("unsafe_semicolon", "pw", "Bad;Name") == REGISTER_ERROR_INVALID_INPUT);
 
     int quoted = register_user("quoted_user' OR '1'='1", "quoted_pw", "Quoted");
     assert(quoted > 0);
     assert(login_user("quoted_user' OR '1'='1", "quoted_pw", nickname, &login_id) == 0);
     assert(login_id == quoted);
+
+    no_nickname = register_user("no_nick_test", "pw", "");
+    assert(no_nickname > 0);
+    assert(login_user("no_nick_test", "pw", nickname, &login_id) == 0);
+    assert(login_id == no_nickname);
+    assert(strcmp(nickname, "no_nick_test") == 0);
 
     assert(get_user_id_by_username("bob_test", &resolved_user_id) == 0);
     assert(resolved_user_id == bob);

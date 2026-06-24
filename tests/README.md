@@ -33,6 +33,7 @@ The database name must contain `test`. The integration test drops and recreates 
 The database suite checks:
 
 - duplicate usernames are rejected
+- blank registration nicknames fall back to the username
 - stored passwords are SHA-256 hashes instead of plaintext
 - SQL-injection-shaped login input does not bypass authentication
 - username lookup resolves `users.username`, rejects missing or delimiter-unsafe usernames, and does not use nicknames as identifiers
