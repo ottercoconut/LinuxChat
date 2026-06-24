@@ -105,6 +105,7 @@ static void test_registration_and_friend_constraints(void) {
     char stored_password[128];
     char nickname[50];
     int login_id = 0;
+    int resolved_user_id = 0;
 
     assert(alice > 0);
     assert(bob > 0);
@@ -131,7 +132,14 @@ static void test_registration_and_friend_constraints(void) {
     assert(login_user("quoted_user' OR '1'='1", "quoted_pw", nickname, &login_id) == 0);
     assert(login_id == quoted);
 
+    assert(get_user_id_by_username("bob_test", &resolved_user_id) == 0);
+    assert(resolved_user_id == bob);
+    assert(get_user_id_by_username("missing_user", &resolved_user_id) == -1);
+    assert(get_user_id_by_username("bad,user", &resolved_user_id) == -1);
+
     assert(add_friend(alice, 999999) == -1);
+    assert(add_friend_by_username(alice, "missing_user") == -1);
+    assert(add_friend_by_username(alice, "alice_test") == -1);
     assert(scalar_long("SELECT COUNT(*) FROM friends") == 0);
 
     assert(add_friend(alice, bob) == 0);
@@ -144,13 +152,15 @@ static void test_registration_and_friend_constraints(void) {
     assert(add_friend(alice, bob) == -1);
     assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
                        "(user_id = 1 AND friend_id = 2) OR (user_id = 2 AND friend_id = 1)") == 2);
+    assert(add_friend_by_username(alice, "quoted_user' OR '1'='1") == 0);
+    assert(are_friends(alice, quoted) == 1);
 
-    assert(block_user(bob, alice) == 0);
+    assert(block_user_by_username(bob, "alice_test") == 0);
     assert(has_block_between(alice, bob) == 1);
     assert(can_send_private_message(alice, bob) == 0);
-    assert(block_user(bob, alice) == -1);
+    assert(block_user_by_username(bob, "alice_test") == -1);
     assert(scalar_long("SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = 2 AND blocked_id = 1") == 1);
-    assert(unblock_user(bob, alice) == 0);
+    assert(unblock_user_by_username(bob, "alice_test") == 0);
     assert(has_block_between(alice, bob) == 0);
     assert(can_send_private_message(alice, bob) == 1);
 }
@@ -233,7 +243,9 @@ static void test_group_chat_and_offline_consistency(void) {
 
     assert(add_group_member(1, group_id, 2) == -1);
     assert(add_group_member(dana, group_id, 1) == -1);
-    assert(add_group_member(1, group_id, dana) == 0);
+    assert(add_group_member_by_username(dana, group_id, "alice_test") == -1);
+    assert(add_group_member_by_username(1, group_id, "missing_user") == -1);
+    assert(add_group_member_by_username(1, group_id, "dana_test") == 0);
     assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 4);
 
     assert(save_group_message(dana, group_id, "hello group", &message_id) == 0);
@@ -249,6 +261,8 @@ static void test_group_chat_and_offline_consistency(void) {
     assert(get_group_messages(1, group_id, messages, sizeof(messages)) == 0);
     assert(strstr(messages, "hello group") != NULL);
     assert(strstr(messages, "Dana;") != NULL);
+    assert(strstr(messages, "%Y") == NULL);
+    assert(strstr(messages, "%d") == NULL);
     offline[0] = '\0';
     get_offline_messages(1, offline, sizeof(offline));
     assert(strstr(offline, group_offline_record) == NULL);

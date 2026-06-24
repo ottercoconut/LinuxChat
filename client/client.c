@@ -18,6 +18,7 @@ int current_user_id = -1;
 char current_username[50];
 char current_nickname[50];
 int selected_friend_id = -1;
+char selected_friend_username[50];
 int selected_group_id = -1;
 gboolean selected_is_group = FALSE;
 
@@ -278,10 +279,12 @@ void on_friend_selected(GtkTreeView *tree_view, gpointer user_data) {
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
         gint friend_id;
         gchar *nickname;
+        gchar *username;
 
-        gtk_tree_model_get(model, &iter, 0, &friend_id, 1, &nickname, -1);
+        gtk_tree_model_get(model, &iter, 0, &friend_id, 1, &nickname, 2, &username, -1);
 
         selected_friend_id = friend_id;
+        snprintf(selected_friend_username, sizeof(selected_friend_username), "%s", username);
         selected_group_id = -1;
         selected_is_group = FALSE;
 
@@ -290,6 +293,7 @@ void on_friend_selected(GtkTreeView *tree_view, gpointer user_data) {
         gtk_label_set_text(GTK_LABEL(g_object_get_data(G_OBJECT(user_data), "chat_title")), title);
 
         g_free(nickname);
+        g_free(username);
 
         gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view)), "", -1);
 
@@ -312,6 +316,7 @@ void on_group_selected(GtkTreeView *tree_view, gpointer user_data) {
 
         selected_group_id = group_id;
         selected_friend_id = -1;
+        selected_friend_username[0] = '\0';
         selected_is_group = TRUE;
 
         char title[120];
@@ -339,7 +344,7 @@ void on_add_friend_clicked(GtkButton *button, gpointer user_data) {
                                                     "取消", GTK_RESPONSE_CANCEL, NULL);
 
     GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget *label = gtk_label_new("请输入好友ID:");
+    GtkWidget *label = gtk_label_new("请输入好友用户名:");
     GtkWidget *entry = gtk_entry_new();
 
     gtk_container_add(GTK_CONTAINER(content_area), label);
@@ -350,13 +355,18 @@ void on_add_friend_clicked(GtkButton *button, gpointer user_data) {
     gint response = gtk_dialog_run(GTK_DIALOG(dialog));
 
     if (response == GTK_RESPONSE_OK) {
-        const char *friend_id_str = gtk_entry_get_text(GTK_ENTRY(entry));
-        int friend_id = atoi(friend_id_str);
+        const char *friend_username = gtk_entry_get_text(GTK_ENTRY(entry));
 
-        if (friend_id > 0 && friend_id != current_user_id) {
+        if (strlen(friend_username) > 0 &&
+            strlen(friend_username) < 50 &&
+            strcmp(friend_username, current_username) != 0 &&
+            is_client_protocol_safe(friend_username, FALSE)) {
             char msg[BUFFER_SIZE];
-            snprintf(msg, sizeof(msg), "ADDFRIEND:%d,%d", current_user_id, friend_id);
-            send_message_to_server(msg);
+            if (snprintf(msg, sizeof(msg), "ADDFRIEND_USERNAME:%s", friend_username) < (int)sizeof(msg)) {
+                send_message_to_server(msg);
+            }
+        } else {
+            gtk_label_set_text(GTK_LABEL(status_label), "请输入有效的好友用户名");
         }
     }
 
@@ -420,7 +430,7 @@ void on_add_group_member_clicked(GtkButton *button, gpointer user_data) {
                                                     GTK_DIALOG_MODAL, "确定", GTK_RESPONSE_OK,
                                                     "取消", GTK_RESPONSE_CANCEL, NULL);
     GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget *label = gtk_label_new("请输入成员ID:");
+    GtkWidget *label = gtk_label_new("请输入成员用户名:");
     GtkWidget *entry = gtk_entry_new();
 
     gtk_container_add(GTK_CONTAINER(content_area), label);
@@ -428,11 +438,17 @@ void on_add_group_member_clicked(GtkButton *button, gpointer user_data) {
     gtk_widget_show_all(content_area);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-        int member_id = atoi(gtk_entry_get_text(GTK_ENTRY(entry)));
-        if (member_id > 0) {
+        const char *member_username = gtk_entry_get_text(GTK_ENTRY(entry));
+        if (strlen(member_username) > 0 &&
+            strlen(member_username) < 50 &&
+            is_client_protocol_safe(member_username, FALSE)) {
             char msg[BUFFER_SIZE];
-            snprintf(msg, sizeof(msg), "ADD_GROUP_MEMBER:%d,%d", selected_group_id, member_id);
-            send_message_to_server(msg);
+            if (snprintf(msg, sizeof(msg), "ADD_GROUP_MEMBER_USERNAME:%d,%s",
+                         selected_group_id, member_username) < (int)sizeof(msg)) {
+                send_message_to_server(msg);
+            }
+        } else {
+            gtk_label_set_text(GTK_LABEL(status_label), "请输入有效的成员用户名");
         }
     }
 
@@ -443,14 +459,15 @@ void on_block_user_clicked(GtkButton *button, gpointer user_data) {
     (void)button;
     (void)user_data;
 
-    if (selected_friend_id <= 0) {
+    if (selected_friend_id <= 0 || selected_friend_username[0] == '\0') {
         gtk_label_set_text(GTK_LABEL(status_label), "请先选择要屏蔽的好友");
         return;
     }
 
     char msg[BUFFER_SIZE];
-    snprintf(msg, sizeof(msg), "BLOCK_USER:%d,%d", current_user_id, selected_friend_id);
-    send_message_to_server(msg);
+    if (snprintf(msg, sizeof(msg), "BLOCK_USER_USERNAME:%s", selected_friend_username) < (int)sizeof(msg)) {
+        send_message_to_server(msg);
+    }
 }
 
 void on_unblock_user_clicked(GtkButton *button, gpointer user_data) {
@@ -461,7 +478,7 @@ void on_unblock_user_clicked(GtkButton *button, gpointer user_data) {
                                                     GTK_DIALOG_MODAL, "确定", GTK_RESPONSE_OK,
                                                     "取消", GTK_RESPONSE_CANCEL, NULL);
     GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget *label = gtk_label_new("请输入用户ID:");
+    GtkWidget *label = gtk_label_new("请输入用户名:");
     GtkWidget *entry = gtk_entry_new();
 
     gtk_container_add(GTK_CONTAINER(content_area), label);
@@ -469,11 +486,16 @@ void on_unblock_user_clicked(GtkButton *button, gpointer user_data) {
     gtk_widget_show_all(content_area);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-        int user_id = atoi(gtk_entry_get_text(GTK_ENTRY(entry)));
-        if (user_id > 0) {
+        const char *blocked_username = gtk_entry_get_text(GTK_ENTRY(entry));
+        if (strlen(blocked_username) > 0 &&
+            strlen(blocked_username) < 50 &&
+            is_client_protocol_safe(blocked_username, FALSE)) {
             char msg[BUFFER_SIZE];
-            snprintf(msg, sizeof(msg), "UNBLOCK_USER:%d,%d", current_user_id, user_id);
-            send_message_to_server(msg);
+            if (snprintf(msg, sizeof(msg), "UNBLOCK_USER_USERNAME:%s", blocked_username) < (int)sizeof(msg)) {
+                send_message_to_server(msg);
+            }
+        } else {
+            gtk_label_set_text(GTK_LABEL(status_label), "请输入有效的用户名");
         }
     }
 
@@ -491,7 +513,7 @@ gboolean parse_friends_list(gpointer data) {
     while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", friend_id, username, nickname) == 3) {
         GtkTreeIter iter;
         gtk_list_store_append(store, &iter);
-        gtk_list_store_set(store, &iter, 0, atoi(friend_id), 1, nickname, -1);
+        gtk_list_store_set(store, &iter, 0, atoi(friend_id), 1, nickname, 2, username, -1);
 
         ptr += strlen(friend_id) + strlen(username) + strlen(nickname) + 3;
     }
@@ -530,10 +552,8 @@ gboolean parse_group_members_list(gpointer data) {
 
     while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", member_id, username, nickname) == 3) {
         GtkTreeIter iter;
-        char display[120];
-        snprintf(display, sizeof(display), "%s (%s)", nickname, member_id);
         gtk_list_store_append(store, &iter);
-        gtk_list_store_set(store, &iter, 0, atoi(member_id), 1, display, -1);
+        gtk_list_store_set(store, &iter, 0, atoi(member_id), 1, nickname, 2, member_id, -1);
 
         ptr += strlen(member_id) + strlen(username) + strlen(nickname) + 3;
     }
@@ -837,8 +857,12 @@ void build_login_window(void) {
 
 void build_chat_window(void) {
     chat_window = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_widget_set_hexpand(chat_window, TRUE);
+    gtk_widget_set_vexpand(chat_window, TRUE);
 
     GtkWidget *sidebar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_widget_set_size_request(sidebar, 220, -1);
+    gtk_widget_set_vexpand(sidebar, TRUE);
 
     GtkWidget *user_info = gtk_frame_new("用户信息");
     GtkWidget *user_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
@@ -858,61 +882,100 @@ void build_chat_window(void) {
 
     GtkWidget *friends_frame = gtk_frame_new("好友列表");
 
-    GtkListStore *store = gtk_list_store_new(2, G_TYPE_INT, G_TYPE_STRING);
+    GtkListStore *store = gtk_list_store_new(3, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING);
     friends_list = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(friends_list), FALSE);
 
     GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes("好友", renderer,
                                                                           "text", 1, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(friends_list), column);
 
-    gtk_container_add(GTK_CONTAINER(friends_frame), friends_list);
+    GtkWidget *friends_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(friends_scroll),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(friends_scroll), 100);
+    gtk_widget_set_vexpand(friends_scroll, TRUE);
+    gtk_container_add(GTK_CONTAINER(friends_scroll), friends_list);
+    gtk_container_add(GTK_CONTAINER(friends_frame), friends_scroll);
 
     GtkWidget *groups_frame = gtk_frame_new("群聊列表");
     GtkListStore *groups_store = gtk_list_store_new(2, G_TYPE_INT, G_TYPE_STRING);
     groups_list = gtk_tree_view_new_with_model(GTK_TREE_MODEL(groups_store));
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(groups_list), FALSE);
     GtkCellRenderer *group_renderer = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *group_column = gtk_tree_view_column_new_with_attributes("群聊", group_renderer,
                                                                                 "text", 1, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(groups_list), group_column);
-    gtk_container_add(GTK_CONTAINER(groups_frame), groups_list);
+    GtkWidget *groups_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(groups_scroll),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(groups_scroll), 120);
+    gtk_widget_set_vexpand(groups_scroll, TRUE);
+    gtk_container_add(GTK_CONTAINER(groups_scroll), groups_list);
+    gtk_container_add(GTK_CONTAINER(groups_frame), groups_scroll);
 
     GtkWidget *members_frame = gtk_frame_new("群成员");
-    GtkListStore *members_store = gtk_list_store_new(2, G_TYPE_INT, G_TYPE_STRING);
+    GtkListStore *members_store = gtk_list_store_new(3, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING);
     members_list = gtk_tree_view_new_with_model(GTK_TREE_MODEL(members_store));
     GtkCellRenderer *member_renderer = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *member_column = gtk_tree_view_column_new_with_attributes("成员", member_renderer,
                                                                                 "text", 1, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(members_list), member_column);
-    gtk_container_add(GTK_CONTAINER(members_frame), members_list);
+    GtkCellRenderer *member_id_renderer = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *member_id_column = gtk_tree_view_column_new_with_attributes("ID", member_id_renderer,
+                                                                                   "text", 2, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(members_list), member_id_column);
+    GtkWidget *members_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(members_scroll),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(members_scroll), 120);
+    gtk_widget_set_vexpand(members_scroll, TRUE);
+    gtk_container_add(GTK_CONTAINER(members_scroll), members_list);
+    gtk_container_add(GTK_CONTAINER(members_frame), members_scroll);
 
-    gtk_container_add(GTK_CONTAINER(sidebar), user_info);
-    gtk_container_add(GTK_CONTAINER(sidebar), friends_frame);
-    gtk_container_add(GTK_CONTAINER(sidebar), groups_frame);
-    gtk_container_add(GTK_CONTAINER(sidebar), members_frame);
+    gtk_box_pack_start(GTK_BOX(sidebar), user_info, FALSE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(sidebar), friends_frame, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(sidebar), groups_frame, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(sidebar), members_frame, TRUE, TRUE, 0);
 
     GtkWidget *chat_area = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_widget_set_hexpand(chat_area, TRUE);
+    gtk_widget_set_vexpand(chat_area, TRUE);
 
     GtkWidget *chat_header = gtk_frame_new("聊天");
     GtkWidget *chat_title = gtk_label_new("选择好友开始聊天");
     gtk_container_add(GTK_CONTAINER(chat_header), chat_title);
+    gtk_widget_set_hexpand(chat_header, TRUE);
 
     message_view = gtk_text_view_new();
     gtk_text_view_set_editable(GTK_TEXT_VIEW(message_view), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(message_view), GTK_WRAP_WORD_CHAR);
+    gtk_widget_set_hexpand(message_view, TRUE);
+    gtk_widget_set_vexpand(message_view, TRUE);
+    GtkWidget *message_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(message_scroll),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_hexpand(message_scroll, TRUE);
+    gtk_widget_set_vexpand(message_scroll, TRUE);
+    gtk_container_add(GTK_CONTAINER(message_scroll), message_view);
 
     GtkWidget *entry_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_widget_set_hexpand(entry_box, TRUE);
     message_entry = gtk_entry_new();
+    gtk_widget_set_hexpand(message_entry, TRUE);
     GtkWidget *send_button = gtk_button_new_with_label("发送");
+    gtk_widget_set_size_request(send_button, 90, -1);
 
-    gtk_container_add(GTK_CONTAINER(entry_box), message_entry);
-    gtk_container_add(GTK_CONTAINER(entry_box), send_button);
+    gtk_box_pack_start(GTK_BOX(entry_box), message_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(entry_box), send_button, FALSE, FALSE, 0);
 
-    gtk_container_add(GTK_CONTAINER(chat_area), chat_header);
-    gtk_container_add(GTK_CONTAINER(chat_area), message_view);
-    gtk_container_add(GTK_CONTAINER(chat_area), entry_box);
+    gtk_box_pack_start(GTK_BOX(chat_area), chat_header, FALSE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(chat_area), message_scroll, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(chat_area), entry_box, FALSE, TRUE, 0);
 
-    gtk_container_add(GTK_CONTAINER(chat_window), sidebar);
-    gtk_container_add(GTK_CONTAINER(chat_window), chat_area);
+    gtk_box_pack_start(GTK_BOX(chat_window), sidebar, FALSE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(chat_window), chat_area, TRUE, TRUE, 0);
 
     g_object_set_data(G_OBJECT(chat_window), "chat_title", chat_title);
 

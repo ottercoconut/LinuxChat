@@ -102,22 +102,31 @@ macOS 如果找不到 MySQL 头文件或链接库，可以改用：
 
 ```bash
 cd server
-gcc server.c -o server $(mysql_config --cflags --libs) -lpthread
+MYSQL_LIBDIR="$(mysql_config --variable=pkglibdir)"
+gcc server.c -o server $(mysql_config --cflags --libs) -Wl,-rpath,"$MYSQL_LIBDIR" -lpthread
+install_name_tool -change libssl.3.dylib @rpath/libssl.3.dylib server
+install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 ```
 
 如果使用 MySQL 官网安装包且 `mysql_config` 不在 `PATH` 中，可以使用完整路径：
 
 ```bash
 cd server
-gcc server.c -o server $(/usr/local/mysql/bin/mysql_config --cflags --libs) -lpthread
+MYSQL_CONFIG_BIN=/usr/local/mysql/bin/mysql_config
+MYSQL_LIBDIR="$($MYSQL_CONFIG_BIN --variable=pkglibdir)"
+gcc server.c -o server $($MYSQL_CONFIG_BIN --cflags --libs) -Wl,-rpath,"$MYSQL_LIBDIR" -lpthread
+install_name_tool -change libssl.3.dylib @rpath/libssl.3.dylib server
+install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 ```
 
-如果运行时提示找不到 `libssl.3.dylib` 或 `libcrypto.3.dylib`，需要为本地生成的 `server` 修正动态库路径：
+如果已经按旧命令编译，运行时提示找不到 `@rpath/libmysqlclient.24.dylib`、`libssl.3.dylib` 或 `libcrypto.3.dylib`，可以不重新编译，直接为本地生成的 `server` 修正动态库路径：
 
 ```bash
-install_name_tool -add_rpath /usr/local/mysql/lib server
-install_name_tool -change libssl.3.dylib /opt/homebrew/lib/libssl.3.dylib server
-install_name_tool -change libcrypto.3.dylib /opt/homebrew/lib/libcrypto.3.dylib server
+cd server
+MYSQL_LIBDIR="$(mysql_config --variable=pkglibdir)"
+install_name_tool -add_rpath "$MYSQL_LIBDIR" server
+install_name_tool -change libssl.3.dylib @rpath/libssl.3.dylib server
+install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 ```
 
 编译客户端：
@@ -157,6 +166,7 @@ cd client
 - 客户端 GTK idle 回调、页面切换和限长解析检查
 - 服务端数据库互斥、事务、级联外键、唯一约束、预处理语句和会话授权检查
 - 安全加固检查，包括协议分隔符拒绝、密码哈希、SQL 注入防护和客户端 `snprintf` 构造
+- 用户名解析路径，包括 username 查找、找不到用户、自我添加拒绝和群成员权限仍以登录会话用户为准
 - `init.sql` 的关键约束和可重复导入特性
 
 如果需要运行真实 MySQL 集成测试，需要准备一个可被测试销毁的数据库，数据库名必须包含 `test`：
@@ -207,28 +217,32 @@ COMMAND:param1,param2,param3
 | --- | --- | --- |
 | REGISTER | username,password,nickname | 用户注册 |
 | LOGIN | username,password | 用户登录 |
-| ADDFRIEND | user_id,friend_id | 添加好友 |
+| ADDFRIEND_USERNAME | username | 添加好友，客户端默认使用用户名 |
+| ADDFRIEND | user_id,friend_id | 添加好友，旧 ID 协议兼容 |
 | FRIENDS | user_id | 获取好友列表 |
 | MESSAGES | user_id,friend_id | 获取历史消息 |
 | SEND | sender_id,receiver_id,content | 发送消息 |
 | CREATE_GROUP | group_name,member_id... | 创建群聊，成员 ID 用逗号分隔 |
 | GROUPS | user_id | 获取当前用户加入的群聊 |
 | GROUP_MEMBERS | group_id | 获取群成员 |
-| ADD_GROUP_MEMBER | group_id,user_id | 添加群成员 |
+| ADD_GROUP_MEMBER_USERNAME | group_id,username | 添加群成员，客户端默认使用用户名 |
+| ADD_GROUP_MEMBER | group_id,user_id | 添加群成员，旧 ID 协议兼容 |
 | GROUP_MESSAGES | group_id | 获取群聊历史 |
 | SEND_GROUP | sender_id,group_id,content | 发送群消息 |
-| BLOCK_USER | user_id,blocked_id | 屏蔽用户 |
-| UNBLOCK_USER | user_id,blocked_id | 解除屏蔽 |
+| BLOCK_USER_USERNAME | username | 屏蔽用户，客户端默认使用用户名 |
+| BLOCK_USER | user_id,blocked_id | 屏蔽用户，旧 ID 协议兼容 |
+| UNBLOCK_USER_USERNAME | username | 解除屏蔽，客户端默认使用用户名 |
+| UNBLOCK_USER | user_id,blocked_id | 解除屏蔽，旧 ID 协议兼容 |
 | OFFLINE_MESSAGES | user_id | 获取未读消息摘要 |
 | QUIT | 无 | 断开连接 |
 
-为兼容现有客户端，`ADDFRIEND`、`FRIENDS`、`MESSAGES`、`SEND`、`GROUPS`、`SEND_GROUP`、`BLOCK_USER`、`UNBLOCK_USER` 和 `OFFLINE_MESSAGES` 仍可携带 user_id/sender_id 字段；服务端实际执行时只信任登录会话中的用户 ID。用户名、密码、昵称和群名不能包含 `,`、`:`、`;` 或换行，消息内容不能包含 `:`、`;` 或换行。
+普通用户交互优先使用 `username`，服务端通过预处理语句将 `users.username` 解析为内部 `users.id`。`users.id` 是数据库主键和内部实现细节；`nickname` 只用于展示，不能作为唯一查找依据。为兼容现有客户端，`ADDFRIEND`、`FRIENDS`、`MESSAGES`、`SEND`、`GROUPS`、`SEND_GROUP`、`BLOCK_USER`、`UNBLOCK_USER` 和 `OFFLINE_MESSAGES` 仍可携带 user_id/sender_id 字段；服务端实际执行时只信任登录会话中的用户 ID。用户名、密码、昵称和群名不能包含 `,`、`:`、`;` 或换行，消息内容不能包含 `:`、`;` 或换行。
 
 ## 数据表
 
 项目主要使用下面几类 MySQL 表：
 
-- `users`：用户账号、SHA-256 密码哈希、昵称和创建时间
+- `users`：内部数字主键、唯一用户名、SHA-256 密码哈希、昵称和创建时间
 - `friends`：用户之间的好友关系
 - `friend_blocks`：用户屏蔽关系
 - `messages`：私聊消息内容、发送方、接收方、未读状态和时间戳

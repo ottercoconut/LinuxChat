@@ -336,6 +336,59 @@ cleanup:
     return status;
 }
 
+int get_user_id_by_username(const char *username, int *user_id) {
+    const char *statement = "SELECT id FROM users WHERE username = ?";
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[1];
+    unsigned long username_length;
+    int found_user_id = 0;
+    int status = -1;
+
+    if (user_id == NULL ||
+        username == NULL ||
+        strlen(username) >= 50 ||
+        !is_protocol_safe_text(username, 0)) {
+        return -1;
+    }
+
+    *user_id = -1;
+
+    memset(params, 0, sizeof(params));
+    bind_string_param(&params[0], username, &username_length);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_LONG;
+    results[0].buffer = &found_user_id;
+
+    pthread_mutex_lock(&db_mutex);
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化用户名查询失败: %s\n", mysql_error(db_conn));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "用户名查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    if (mysql_stmt_fetch(stmt) == 0) {
+        *user_id = found_user_id;
+        status = 0;
+    }
+
+cleanup:
+    if (stmt != NULL) {
+        mysql_stmt_close(stmt);
+    }
+    pthread_mutex_unlock(&db_mutex);
+    return status;
+}
+
 int add_friend(int user_id, int friend_id) {
     char query[500];
 
@@ -379,6 +432,20 @@ int add_friend(int user_id, int friend_id) {
 
     pthread_mutex_unlock(&db_mutex);
     return 0;
+}
+
+int add_friend_by_username(int user_id, const char *friend_username) {
+    int friend_id;
+
+    if (user_id <= 0 ||
+        friend_username == NULL ||
+        strlen(friend_username) >= 50 ||
+        !is_protocol_safe_text(friend_username, 0) ||
+        get_user_id_by_username(friend_username, &friend_id) != 0) {
+        return -1;
+    }
+
+    return add_friend(user_id, friend_id);
 }
 
 void get_friends(int user_id, char *result, size_t result_size) {
@@ -589,6 +656,34 @@ cleanup:
     return status;
 }
 
+int block_user_by_username(int blocker_id, const char *blocked_username) {
+    int blocked_id;
+
+    if (blocker_id <= 0 ||
+        blocked_username == NULL ||
+        strlen(blocked_username) >= 50 ||
+        !is_protocol_safe_text(blocked_username, 0) ||
+        get_user_id_by_username(blocked_username, &blocked_id) != 0) {
+        return -1;
+    }
+
+    return block_user(blocker_id, blocked_id);
+}
+
+int unblock_user_by_username(int blocker_id, const char *blocked_username) {
+    int blocked_id;
+
+    if (blocker_id <= 0 ||
+        blocked_username == NULL ||
+        strlen(blocked_username) >= 50 ||
+        !is_protocol_safe_text(blocked_username, 0) ||
+        get_user_id_by_username(blocked_username, &blocked_id) != 0) {
+        return -1;
+    }
+
+    return unblock_user(blocker_id, blocked_id);
+}
+
 int is_group_member(int user_id, int group_id) {
     const char *statement =
         "SELECT COUNT(*) FROM group_members WHERE user_id = ? AND group_id = ?";
@@ -737,6 +832,21 @@ int add_group_member(int requester_id, int group_id, int new_member_id) {
     }
     pthread_mutex_unlock(&db_mutex);
     return status;
+}
+
+int add_group_member_by_username(int requester_id, int group_id, const char *new_member_username) {
+    int new_member_id;
+
+    if (requester_id <= 0 ||
+        group_id <= 0 ||
+        new_member_username == NULL ||
+        strlen(new_member_username) >= 50 ||
+        !is_protocol_safe_text(new_member_username, 0) ||
+        get_user_id_by_username(new_member_username, &new_member_id) != 0) {
+        return -1;
+    }
+
+    return add_group_member(requester_id, group_id, new_member_id);
 }
 
 int create_group(int owner_id, const char *group_name, const char *member_csv) {
@@ -1211,7 +1321,7 @@ cleanup:
 
 int get_group_messages(int requester_id, int group_id, char *result, size_t result_size) {
     const char *statement =
-        "SELECT gm.content, DATE_FORMAT(gm.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s'), u.nickname "
+        "SELECT gm.content, DATE_FORMAT(gm.timestamp, '%Y-%m-%d %H-%i-%s'), u.nickname "
         "FROM group_messages gm JOIN users u ON gm.sender_id = u.id "
         "WHERE gm.group_id = ? ORDER BY gm.timestamp, gm.id";
     MYSQL_STMT *stmt = NULL;
@@ -1558,6 +1668,17 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
+        else if (strncmp(buffer, "ADDFRIEND_USERNAME:", 19) == 0) {
+            char friend_username[50];
+            if (client->user_id > 0 &&
+                sscanf(buffer + 19, "%49[^\n]", friend_username) == 1 &&
+                add_friend_by_username(client->user_id, friend_username) == 0) {
+                snprintf(response, sizeof(response), "ADDFRIEND_SUCCESS");
+            } else {
+                snprintf(response, sizeof(response), "ADDFRIEND_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
         else if (strncmp(buffer, "FRIENDS:", 8) == 0) {
             int requested_user_id;
             if (client->user_id > 0 && sscanf(buffer + 8, "%d", &requested_user_id) == 1) {
@@ -1689,6 +1810,18 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
+        else if (strncmp(buffer, "ADD_GROUP_MEMBER_USERNAME:", 26) == 0) {
+            int group_id;
+            char new_member_username[50];
+            if (client->user_id > 0 &&
+                sscanf(buffer + 26, "%d,%49[^\n]", &group_id, new_member_username) == 2 &&
+                add_group_member_by_username(client->user_id, group_id, new_member_username) == 0) {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
+            } else {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
         else if (strncmp(buffer, "GROUP_MESSAGES:", 15) == 0) {
             int group_id;
             char messages[BUFFER_SIZE];
@@ -1744,6 +1877,17 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
+        else if (strncmp(buffer, "BLOCK_USER_USERNAME:", 20) == 0) {
+            char blocked_username[50];
+            if (client->user_id > 0 &&
+                sscanf(buffer + 20, "%49[^\n]", blocked_username) == 1 &&
+                block_user_by_username(client->user_id, blocked_username) == 0) {
+                snprintf(response, sizeof(response), "BLOCK_USER_SUCCESS");
+            } else {
+                snprintf(response, sizeof(response), "BLOCK_USER_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
         else if (strncmp(buffer, "UNBLOCK_USER:", 13) == 0) {
             int requested_user_id, blocked_id;
             if (client->user_id > 0 &&
@@ -1753,6 +1897,17 @@ void *handle_client(void *arg) {
                     printf("忽略客户端声明的解除屏蔽用户ID: %d，使用登录会话ID: %d\n",
                            requested_user_id, client->user_id);
                 }
+                snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
+            } else {
+                snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED");
+            }
+            send(client->sockfd, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "UNBLOCK_USER_USERNAME:", 22) == 0) {
+            char blocked_username[50];
+            if (client->user_id > 0 &&
+                sscanf(buffer + 22, "%49[^\n]", blocked_username) == 1 &&
+                unblock_user_by_username(client->user_id, blocked_username) == 0) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
             } else {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED");
