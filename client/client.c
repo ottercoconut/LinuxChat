@@ -901,6 +901,8 @@ void *receive_messages(void *arg) {
             gdk_threads_add_idle(show_status_message, g_strdup("拉黑失败，请确认用户名是否正确"));
         } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_SUCCESS")) {
             gdk_threads_add_idle(show_message_dialog, g_strdup("已解除拉黑"));
+        } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_FAILED_BLOCKED_BY_TARGET")) {
+            gdk_threads_add_idle(show_message_dialog, g_strdup("对方已将你拉黑，无法由你解除"));
         } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_FAILED_NOT_BLOCKED")) {
             gdk_threads_add_idle(show_message_dialog, g_strdup("该用户未被拉黑，无需解除拉黑"));
         } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_FAILED")) {
