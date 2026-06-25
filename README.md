@@ -91,6 +91,18 @@ macOS 使用 Homebrew 安装 MySQL 后，也可以通过同样的 `mysql` 命令
 
 ## 编译运行
 
+macOS 推荐使用脚本完成客户端和服务端全量编译：
+
+```bash
+./scripts/build_macos.sh
+```
+
+脚本会自动探测 `mysql_config`、Homebrew `openssl@3` 和 GTK 编译参数，生成 `client/client` 与 `server/server`，并为服务端写入 MySQL/OpenSSL 的 rpath。如果 `mysql_config` 不在默认路径，可以显式指定：
+
+```bash
+MYSQL_CONFIG=/usr/local/mysql/bin/mysql_config ./scripts/build_macos.sh
+```
+
 编译服务端：
 
 ```bash
@@ -103,7 +115,15 @@ macOS 如果找不到 MySQL 头文件或链接库，可以改用：
 ```bash
 cd server
 MYSQL_LIBDIR="$(mysql_config --variable=pkglibdir)"
-gcc server.c -o server $(mysql_config --cflags --libs) -Wl,-rpath,"$MYSQL_LIBDIR" -lpthread
+OPENSSL_LIBDIR="$(brew --prefix openssl@3)/lib"
+gcc server.c -o server \
+  $(mysql_config --cflags) \
+  -L"$MYSQL_LIBDIR" -L"$OPENSSL_LIBDIR" \
+  -lmysqlclient -lssl -lcrypto -lresolv \
+  -Wl,-rpath,"$MYSQL_LIBDIR" \
+  -Wl,-rpath,"$OPENSSL_LIBDIR" \
+  -Wl,-headerpad_max_install_names \
+  -lpthread
 install_name_tool -change libssl.3.dylib @rpath/libssl.3.dylib server
 install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 ```
@@ -114,7 +134,15 @@ install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 cd server
 MYSQL_CONFIG_BIN=/usr/local/mysql/bin/mysql_config
 MYSQL_LIBDIR="$($MYSQL_CONFIG_BIN --variable=pkglibdir)"
-gcc server.c -o server $($MYSQL_CONFIG_BIN --cflags --libs) -Wl,-rpath,"$MYSQL_LIBDIR" -lpthread
+OPENSSL_LIBDIR="$(brew --prefix openssl@3)/lib"
+gcc server.c -o server \
+  $($MYSQL_CONFIG_BIN --cflags) \
+  -L"$MYSQL_LIBDIR" -L"$OPENSSL_LIBDIR" \
+  -lmysqlclient -lssl -lcrypto -lresolv \
+  -Wl,-rpath,"$MYSQL_LIBDIR" \
+  -Wl,-rpath,"$OPENSSL_LIBDIR" \
+  -Wl,-headerpad_max_install_names \
+  -lpthread
 install_name_tool -change libssl.3.dylib @rpath/libssl.3.dylib server
 install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 ```
@@ -124,10 +152,14 @@ install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 ```bash
 cd server
 MYSQL_LIBDIR="$(mysql_config --variable=pkglibdir)"
+OPENSSL_LIBDIR="$(brew --prefix openssl@3)/lib"
 install_name_tool -add_rpath "$MYSQL_LIBDIR" server
+install_name_tool -add_rpath "$OPENSSL_LIBDIR" server
 install_name_tool -change libssl.3.dylib @rpath/libssl.3.dylib server
 install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib server
 ```
+
+如果 `install_name_tool` 提示 `larger updated load commands do not fit`，说明旧二进制没有预留足够的 Mach-O load command 空间，需要按上面的完整 macOS 命令重新编译，关键是包含 `-Wl,-headerpad_max_install_names`、MySQL rpath 和 OpenSSL rpath。
 
 编译客户端：
 
