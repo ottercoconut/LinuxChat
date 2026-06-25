@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <time.h>
 #include <mysql.h>
 
 #define PORT 8888
@@ -122,6 +123,72 @@ int append_protocol_record(char *result, size_t result_size,
     }
 
     return 0;
+}
+
+static int format_local_protocol_timestamp(char *timestamp, size_t timestamp_size) {
+    time_t now;
+    struct tm tm_info;
+
+    if (timestamp == NULL || timestamp_size == 0) {
+        return -1;
+    }
+
+    timestamp[0] = '\0';
+    now = time(NULL);
+    if (localtime_r(&now, &tm_info) == NULL) {
+        return -1;
+    }
+
+    return strftime(timestamp, timestamp_size, "%Y-%m-%d %H-%M-%S", &tm_info) > 0 ? 0 : -1;
+}
+
+static int fetch_formatted_timestamp_locked(const char *statement, int record_id,
+                                            char *timestamp, size_t timestamp_size) {
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND params[1];
+    MYSQL_BIND results[1];
+    unsigned long timestamp_length = 0;
+    int bound_record_id = record_id;
+    int fetch_status;
+    int status = -1;
+
+    if (statement == NULL || record_id <= 0 || timestamp == NULL || timestamp_size < 2) {
+        return -1;
+    }
+    timestamp[0] = '\0';
+
+    memset(params, 0, sizeof(params));
+    bind_int_param(&params[0], &bound_record_id);
+
+    memset(results, 0, sizeof(results));
+    results[0].buffer_type = MYSQL_TYPE_STRING;
+    results[0].buffer = timestamp;
+    results[0].buffer_length = timestamp_size - 1;
+    results[0].length = &timestamp_length;
+
+    stmt = mysql_stmt_init(db_conn);
+    if (stmt == NULL) {
+        fprintf(stderr, "初始化时间戳查询失败: %s\n", mysql_error(db_conn));
+        return -1;
+    }
+
+    if (mysql_stmt_prepare(stmt, statement, strlen(statement)) != 0 ||
+        mysql_stmt_bind_param(stmt, params) != 0 ||
+        mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_bind_result(stmt, results) != 0) {
+        fprintf(stderr, "时间戳查询失败: %s\n", mysql_stmt_error(stmt));
+        goto cleanup;
+    }
+
+    fetch_status = mysql_stmt_fetch(stmt);
+    if (fetch_status == 0 || fetch_status == MYSQL_DATA_TRUNCATED) {
+        timestamp[timestamp_length < timestamp_size ? timestamp_length : timestamp_size - 1] = '\0';
+        status = 0;
+    }
+
+cleanup:
+    mysql_stmt_close(stmt);
+    return status;
 }
 
 void update_client_session(int sockfd, int user_id, const char *username, const char *nickname) {
@@ -1311,9 +1378,12 @@ void get_messages(int user_id, int friend_id, char *result, size_t result_size) 
     pthread_mutex_unlock(&db_mutex);
 }
 
-int save_message(int sender_id, int receiver_id, const char *content) {
+int save_message(int sender_id, int receiver_id, const char *content,
+                 char *timestamp, size_t timestamp_size) {
     const char *statement =
         "INSERT INTO messages (sender_id, receiver_id, content, delivered) VALUES (?, ?, ?, ?)";
+    const char *timestamp_statement =
+        "SELECT DATE_FORMAT(timestamp, '%Y-%m-%d %H-%i-%s') FROM messages WHERE id = ?";
     MYSQL_STMT *stmt = NULL;
     MYSQL_BIND params[4];
     unsigned long content_length;
@@ -1321,6 +1391,11 @@ int save_message(int sender_id, int receiver_id, const char *content) {
     int bound_sender_id = sender_id;
     int bound_receiver_id = receiver_id;
     int delivered = is_user_online(receiver_id) ? 1 : 0;
+    int saved_message_id = -1;
+
+    if (timestamp != NULL && timestamp_size > 0) {
+        timestamp[0] = '\0';
+    }
 
     if (sender_id <= 0 ||
         receiver_id <= 0 ||
@@ -1348,6 +1423,16 @@ int save_message(int sender_id, int receiver_id, const char *content) {
         goto cleanup;
     }
 
+    saved_message_id = (int)mysql_insert_id(db_conn);
+    mysql_stmt_close(stmt);
+    stmt = NULL;
+    if (timestamp != NULL && timestamp_size > 0 &&
+        fetch_formatted_timestamp_locked(timestamp_statement,
+                                         saved_message_id,
+                                         timestamp,
+                                         timestamp_size) != 0) {
+        format_local_protocol_timestamp(timestamp, timestamp_size);
+    }
     status = 0;
 
 cleanup:
@@ -1402,11 +1487,14 @@ static int fetch_group_member_ids_locked(int group_id, int *member_ids, int max_
     return count;
 }
 
-int save_group_message(int sender_id, int group_id, const char *content, int *message_id) {
+int save_group_message(int sender_id, int group_id, const char *content, int *message_id,
+                       char *timestamp, size_t timestamp_size) {
     const char *insert_message =
         "INSERT INTO group_messages (group_id, sender_id, content) VALUES (?, ?, ?)";
     const char *insert_delivery =
         "INSERT INTO group_message_deliveries (message_id, user_id, delivered) VALUES (?, ?, ?)";
+    const char *timestamp_statement =
+        "SELECT DATE_FORMAT(timestamp, '%Y-%m-%d %H-%i-%s') FROM group_messages WHERE id = ?";
     MYSQL_STMT *stmt = NULL;
     MYSQL_BIND params[3];
     unsigned long content_length;
@@ -1419,6 +1507,9 @@ int save_group_message(int sender_id, int group_id, const char *content, int *me
 
     if (message_id != NULL) {
         *message_id = -1;
+    }
+    if (timestamp != NULL && timestamp_size > 0) {
+        timestamp[0] = '\0';
     }
     if (sender_id <= 0 ||
         group_id <= 0 ||
@@ -1449,6 +1540,13 @@ int save_group_message(int sender_id, int group_id, const char *content, int *me
     saved_message_id = (int)mysql_insert_id(db_conn);
     mysql_stmt_close(stmt);
     stmt = NULL;
+    if (timestamp != NULL && timestamp_size > 0 &&
+        fetch_formatted_timestamp_locked(timestamp_statement,
+                                         saved_message_id,
+                                         timestamp,
+                                         timestamp_size) != 0) {
+        format_local_protocol_timestamp(timestamp, timestamp_size);
+    }
 
     member_count = fetch_group_member_ids_locked(group_id, member_ids, MAX_CLIENTS);
     for (int i = 0; i < member_count; i++) {
@@ -1689,6 +1787,22 @@ int get_group_member_ids(int group_id, int *member_ids, int max_members) {
     return count;
 }
 
+void notify_group_members_changed(int group_id, int excluded_user_id) {
+    int member_ids[MAX_CLIENTS];
+    int member_count;
+
+    if (group_id <= 0) {
+        return;
+    }
+
+    member_count = get_group_member_ids(group_id, member_ids, MAX_CLIENTS);
+    for (int i = 0; i < member_count; i++) {
+        if (member_ids[i] != excluded_user_id) {
+            send_to_user(member_ids[i], "ADD_GROUP_MEMBER_SUCCESS");
+        }
+    }
+}
+
 void send_to_group_members(int group_id, const char *message) {
     int member_ids[MAX_CLIENTS];
     int member_count = get_group_member_ids(group_id, member_ids, MAX_CLIENTS);
@@ -1919,6 +2033,7 @@ void *handle_client(void *arg) {
         else if (HAS_PREFIX(buffer, "SEND:")) {
             int sender_id, requested_sender_id, receiver_id;
             char content[BUFFER_SIZE];
+            char timestamp[50] = "";
 
             if (client->user_id <= 0) {
                 snprintf(response, sizeof(response), "SEND_FAILED");
@@ -1939,13 +2054,17 @@ void *handle_client(void *arg) {
                        requested_sender_id, sender_id);
             }
             if (!can_send_private_message(sender_id, receiver_id) ||
-                save_message(sender_id, receiver_id, content) != 0) {
+                save_message(sender_id, receiver_id, content, timestamp, sizeof(timestamp)) != 0) {
                 snprintf(response, sizeof(response), "SEND_FAILED");
                 send(client->sockfd, response, strlen(response), 0);
                 continue;
             }
 
-            snprintf(response, sizeof(response), "NEW_MESSAGE:%d:%s:%s", sender_id, client->nickname, content);
+            if (timestamp[0] == '\0') {
+                format_local_protocol_timestamp(timestamp, sizeof(timestamp));
+            }
+            snprintf(response, sizeof(response), "NEW_MESSAGE:%d:%s:%s:%s",
+                     sender_id, client->nickname, timestamp, content);
             send_to_user(receiver_id, response);
             send(client->sockfd, response, strlen(response), 0);
         }
@@ -1977,6 +2096,9 @@ void *handle_client(void *arg) {
                 snprintf(response, sizeof(response), "CREATE_GROUP_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
+            if (group_id > 0) {
+                notify_group_members_changed(group_id, client->user_id);
+            }
         }
         else if (HAS_PREFIX(buffer, "GROUPS:")) {
             int requested_user_id;
@@ -2008,27 +2130,39 @@ void *handle_client(void *arg) {
         }
         else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER:")) {
             int group_id, new_member_id;
+            int member_added = 0;
             if (client->user_id > 0 &&
                 sscanf(PREFIX_PAYLOAD(buffer, "ADD_GROUP_MEMBER:"), "%d,%d", &group_id, &new_member_id) == 2 &&
                 add_group_member(client->user_id, group_id, new_member_id) == 0) {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
+                member_added = 1;
             } else {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
+            if (member_added) {
+                notify_group_members_changed(group_id, client->user_id);
+            }
         }
         else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_USERNAME:")) {
             int group_id;
+            int new_member_id = -1;
+            int member_added = 0;
             char new_member_username[50];
             if (client->user_id > 0 &&
                 sscanf(PREFIX_PAYLOAD(buffer, "ADD_GROUP_MEMBER_USERNAME:"),
                        "%d,%49[^\n]", &group_id, new_member_username) == 2 &&
+                get_user_id_by_username(new_member_username, &new_member_id) == 0 &&
                 add_group_member_by_username(client->user_id, group_id, new_member_username) == 0) {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
+                member_added = 1;
             } else {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
+            if (member_added) {
+                notify_group_members_changed(group_id, client->user_id);
+            }
         }
         else if (HAS_PREFIX(buffer, "GROUP_MESSAGES:")) {
             int group_id;
@@ -2046,6 +2180,7 @@ void *handle_client(void *arg) {
         else if (HAS_PREFIX(buffer, "SEND_GROUP:")) {
             int requested_sender_id, sender_id, group_id, message_id;
             char content[BUFFER_SIZE];
+            char timestamp[50] = "";
 
             if (client->user_id <= 0 ||
                 sscanf(PREFIX_PAYLOAD(buffer, "SEND_GROUP:"),
@@ -2061,14 +2196,18 @@ void *handle_client(void *arg) {
                        requested_sender_id, sender_id);
             }
 
-            if (save_group_message(sender_id, group_id, content, &message_id) != 0) {
+            if (save_group_message(sender_id, group_id, content, &message_id,
+                                   timestamp, sizeof(timestamp)) != 0) {
                 snprintf(response, sizeof(response), "SEND_GROUP_FAILED");
                 send(client->sockfd, response, strlen(response), 0);
                 continue;
             }
 
-            snprintf(response, sizeof(response), "NEW_GROUP_MESSAGE:%d:%d:%s:%s",
-                     group_id, sender_id, client->nickname, content);
+            if (timestamp[0] == '\0') {
+                format_local_protocol_timestamp(timestamp, sizeof(timestamp));
+            }
+            snprintf(response, sizeof(response), "NEW_GROUP_MESSAGE:%d:%d:%s:%s:%s",
+                     group_id, sender_id, client->nickname, timestamp, content);
             send_to_group_members(group_id, response);
         }
         else if (HAS_PREFIX(buffer, "BLOCK_USER:")) {
