@@ -17,6 +17,9 @@
 #define REGISTER_ERROR_SERVER -1
 #define REGISTER_ERROR_DUPLICATE -2
 #define REGISTER_ERROR_INVALID_INPUT -3
+#define GROUP_MEMBER_ADD_ALREADY_MEMBER -2
+#define GROUP_MEMBER_ADD_BLOCKED -3
+#define UNBLOCK_USER_NOT_BLOCKED -2
 #define HAS_PREFIX(text, prefix) (strncmp((text), (prefix), strlen(prefix)) == 0)
 #define PREFIX_PAYLOAD(text, prefix) ((text) + strlen(prefix))
 
@@ -862,7 +865,7 @@ int unblock_user(int blocker_id, int blocked_id) {
 
     direct_block = has_direct_block(blocker_id, blocked_id);
     if (direct_block == 0) {
-        return 0;
+        return UNBLOCK_USER_NOT_BLOCKED;
     }
     if (direct_block < 0) {
         return -1;
@@ -1065,10 +1068,16 @@ int add_group_member(int requester_id, int group_id, int new_member_id) {
         !is_group_member(requester_id, group_id)) {
         return -1;
     }
+    if (is_group_member(new_member_id, group_id)) {
+        return GROUP_MEMBER_ADD_ALREADY_MEMBER;
+    }
+    if (has_block_between(requester_id, new_member_id)) {
+        return GROUP_MEMBER_ADD_BLOCKED;
+    }
 
     pthread_mutex_lock(&db_mutex);
     if (user_exists_locked(new_member_id)) {
-        status = insert_group_member_locked(group_id, new_member_id, 1);
+        status = insert_group_member_locked(group_id, new_member_id, 0);
     }
     pthread_mutex_unlock(&db_mutex);
     return status;
@@ -1097,7 +1106,6 @@ int create_group(int owner_id, const char *group_name, const char *member_csv) {
     unsigned long name_length;
     int bound_owner_id = owner_id;
     int group_id = -1;
-    char members[BUFFER_SIZE];
 
     if (owner_id <= 0 ||
         !is_protocol_safe_text(group_name, 0) ||
@@ -1105,7 +1113,7 @@ int create_group(int owner_id, const char *group_name, const char *member_csv) {
         return -1;
     }
 
-    if (member_csv != NULL && member_csv[0] != '\0' && !is_protocol_safe_text(member_csv, 1)) {
+    if (member_csv != NULL && member_csv[0] != '\0') {
         return -1;
     }
 
@@ -1139,24 +1147,6 @@ int create_group(int owner_id, const char *group_name, const char *member_csv) {
         mysql_query(db_conn, "ROLLBACK");
         group_id = -1;
         goto cleanup;
-    }
-
-    if (member_csv != NULL && member_csv[0] != '\0') {
-        snprintf(members, sizeof(members), "%s", member_csv);
-        char *saveptr = NULL;
-        char *token = strtok_r(members, ",", &saveptr);
-        while (token != NULL) {
-            char *endptr = NULL;
-            long parsed_id = strtol(token, &endptr, 10);
-            if (token[0] == '\0' || *endptr != '\0' || parsed_id <= 0 || parsed_id > 2147483647L ||
-                !user_exists_locked((int)parsed_id) ||
-                insert_group_member_locked(group_id, (int)parsed_id, 1) != 0) {
-                mysql_query(db_conn, "ROLLBACK");
-                group_id = -1;
-                goto cleanup;
-            }
-            token = strtok_r(NULL, ",", &saveptr);
-        }
     }
 
     if (mysql_query(db_conn, "COMMIT") != 0) {
@@ -2068,10 +2058,7 @@ void *handle_client(void *arg) {
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (HAS_PREFIX(buffer, "CREATE_GROUP:")) {
-            char payload[BUFFER_SIZE];
             char group_name[80];
-            char member_csv[BUFFER_SIZE] = "";
-            char *comma;
             int group_id = -1;
 
             if (client->user_id <= 0) {
@@ -2080,15 +2067,9 @@ void *handle_client(void *arg) {
                 continue;
             }
 
-            snprintf(payload, sizeof(payload), "%s", PREFIX_PAYLOAD(buffer, "CREATE_GROUP:"));
-            comma = strchr(payload, ',');
-            if (comma != NULL) {
-                *comma = '\0';
-                snprintf(member_csv, sizeof(member_csv), "%s", comma + 1);
-            }
-            snprintf(group_name, sizeof(group_name), "%s", payload);
+            snprintf(group_name, sizeof(group_name), "%s", PREFIX_PAYLOAD(buffer, "CREATE_GROUP:"));
 
-            group_id = create_group(client->user_id, group_name, member_csv);
+            group_id = create_group(client->user_id, group_name, NULL);
             if (group_id > 0) {
                 snprintf(response, sizeof(response), "CREATE_GROUP_SUCCESS:%d", group_id);
             } else {
@@ -2130,11 +2111,18 @@ void *handle_client(void *arg) {
         else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER:")) {
             int group_id, new_member_id;
             int member_added = 0;
+            int add_status = -1;
             if (client->user_id > 0 &&
-                sscanf(PREFIX_PAYLOAD(buffer, "ADD_GROUP_MEMBER:"), "%d,%d", &group_id, &new_member_id) == 2 &&
-                add_group_member(client->user_id, group_id, new_member_id) == 0) {
+                sscanf(PREFIX_PAYLOAD(buffer, "ADD_GROUP_MEMBER:"), "%d,%d", &group_id, &new_member_id) == 2) {
+                add_status = add_group_member(client->user_id, group_id, new_member_id);
+            }
+            if (add_status == 0) {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
                 member_added = 1;
+            } else if (add_status == GROUP_MEMBER_ADD_ALREADY_MEMBER) {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED_ALREADY_MEMBER");
+            } else if (add_status == GROUP_MEMBER_ADD_BLOCKED) {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED_BLOCKED");
             } else {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED");
             }
@@ -2147,14 +2135,21 @@ void *handle_client(void *arg) {
             int group_id;
             int new_member_id = -1;
             int member_added = 0;
+            int add_status = -1;
             char new_member_username[50];
             if (client->user_id > 0 &&
                 sscanf(PREFIX_PAYLOAD(buffer, "ADD_GROUP_MEMBER_USERNAME:"),
                        "%d,%49[^\n]", &group_id, new_member_username) == 2 &&
-                get_user_id_by_username(new_member_username, &new_member_id) == 0 &&
-                add_group_member_by_username(client->user_id, group_id, new_member_username) == 0) {
+                get_user_id_by_username(new_member_username, &new_member_id) == 0) {
+                add_status = add_group_member(client->user_id, group_id, new_member_id);
+            }
+            if (add_status == 0) {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
                 member_added = 1;
+            } else if (add_status == GROUP_MEMBER_ADD_ALREADY_MEMBER) {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED_ALREADY_MEMBER");
+            } else if (add_status == GROUP_MEMBER_ADD_BLOCKED) {
+                snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED_BLOCKED");
             } else {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_FAILED");
             }
@@ -2237,14 +2232,19 @@ void *handle_client(void *arg) {
         }
         else if (HAS_PREFIX(buffer, "UNBLOCK_USER:")) {
             int requested_user_id, blocked_id;
+            int unblock_status = -1;
             if (client->user_id > 0 &&
-                sscanf(PREFIX_PAYLOAD(buffer, "UNBLOCK_USER:"), "%d,%d", &requested_user_id, &blocked_id) == 2 &&
-                unblock_user(client->user_id, blocked_id) == 0) {
+                sscanf(PREFIX_PAYLOAD(buffer, "UNBLOCK_USER:"), "%d,%d", &requested_user_id, &blocked_id) == 2) {
+                unblock_status = unblock_user(client->user_id, blocked_id);
                 if (requested_user_id != client->user_id) {
                     printf("忽略客户端声明的解除屏蔽用户ID: %d，使用登录会话ID: %d\n",
                            requested_user_id, client->user_id);
                 }
+            }
+            if (unblock_status == 0) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
+            } else if (unblock_status == UNBLOCK_USER_NOT_BLOCKED) {
+                snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED_NOT_BLOCKED");
             } else {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED");
             }
@@ -2252,10 +2252,15 @@ void *handle_client(void *arg) {
         }
         else if (HAS_PREFIX(buffer, "UNBLOCK_USER_USERNAME:")) {
             char blocked_username[50];
+            int unblock_status = -1;
             if (client->user_id > 0 &&
-                sscanf(PREFIX_PAYLOAD(buffer, "UNBLOCK_USER_USERNAME:"), "%49[^\n]", blocked_username) == 1 &&
-                unblock_user_by_username(client->user_id, blocked_username) == 0) {
+                sscanf(PREFIX_PAYLOAD(buffer, "UNBLOCK_USER_USERNAME:"), "%49[^\n]", blocked_username) == 1) {
+                unblock_status = unblock_user_by_username(client->user_id, blocked_username);
+            }
+            if (unblock_status == 0) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
+            } else if (unblock_status == UNBLOCK_USER_NOT_BLOCKED) {
+                snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED_NOT_BLOCKED");
             } else {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED");
             }

@@ -170,7 +170,7 @@ static void test_registration_and_friend_constraints(void) {
              bob, alice);
     assert(scalar_long(relation_query) == 1);
     assert(unblock_user_by_username(bob, "alice_test") == 0);
-    assert(unblock_user_by_username(bob, "alice_test") == 0);
+    assert(unblock_user_by_username(bob, "alice_test") == UNBLOCK_USER_NOT_BLOCKED);
     assert(scalar_long(relation_query) == 0);
     assert(has_block_between(alice, bob) == 0);
     assert(can_send_private_message(alice, bob) == 1);
@@ -254,8 +254,8 @@ static void test_group_chat_and_offline_consistency(void) {
     int quoted = (int)scalar_long("SELECT id FROM users WHERE username='quoted_user'' OR ''1''=''1'");
     int message_id = -1;
     int dana = register_user("dana_test", "pw");
+    int erin = register_user("erin_test", "pw");
     int group_id;
-    char initial_members[64];
     char group_offline_record[64];
     char groups[BUFFER_SIZE] = "";
     char members[BUFFER_SIZE] = "";
@@ -266,13 +266,13 @@ static void test_group_chat_and_offline_consistency(void) {
     char private_offline_record[64];
 
     assert(dana > 0);
+    assert(erin > 0);
 
-    snprintf(initial_members, sizeof(initial_members), "%d,%d,%d", bob, bob, quoted);
-    group_id = create_group(alice, "Study Group", initial_members);
+    group_id = create_group(alice, "Study Group", NULL);
     assert(group_id > 0);
     snprintf(query, sizeof(query), "SELECT COUNT(*) FROM group_members WHERE group_id = %d", group_id);
-    assert(scalar_long(query) == 3);
-    assert(create_group(alice, "Unsafe:Group", "2") == -1);
+    assert(scalar_long(query) == 1);
+    assert(create_group(alice, "Unsafe:Group", NULL) == -1);
     assert(create_group(alice, "Bad Members", "2,bad") == -1);
     assert(create_group(alice, "Missing Member", "999999") == -1);
     assert(scalar_long("SELECT COUNT(*) FROM chat_groups WHERE name = 'Bad Members'") == 0);
@@ -285,17 +285,24 @@ static void test_group_chat_and_offline_consistency(void) {
 
     assert(get_group_members(alice, group_id, members, sizeof(members)) == 0);
     assert(strstr(members, "alice_test:alice_test;") != NULL);
-    assert(strstr(members, "bob_test:bob_test;") != NULL);
+    assert(strstr(members, "bob_test:bob_test;") == NULL);
     assert(get_group_members(dana, group_id, members, sizeof(members)) == -1);
 
     assert(add_group_member(alice, group_id, bob) == 0);
+    assert(scalar_long(query) == 2);
+    assert(add_group_member(alice, group_id, bob) == GROUP_MEMBER_ADD_ALREADY_MEMBER);
+    assert(scalar_long(query) == 2);
+    assert(add_group_member(alice, group_id, quoted) == 0);
+    assert(scalar_long(query) == 3);
+    assert(block_user(alice, erin) == 0);
+    assert(add_group_member(alice, group_id, erin) == GROUP_MEMBER_ADD_BLOCKED);
     assert(scalar_long(query) == 3);
     assert(add_group_member(dana, group_id, alice) == -1);
     assert(add_group_member_by_username(dana, group_id, "alice_test") == -1);
     assert(add_group_member_by_username(alice, group_id, "missing_user") == -1);
     assert(add_group_member_by_username(alice, group_id, "dana_test") == 0);
     assert(scalar_long(query) == 4);
-    assert(add_group_member_by_username(alice, group_id, "dana_test") == 0);
+    assert(add_group_member_by_username(alice, group_id, "dana_test") == GROUP_MEMBER_ADD_ALREADY_MEMBER);
     assert(scalar_long(query) == 4);
 
     assert(save_group_message(dana, group_id, "hello group", &message_id,
