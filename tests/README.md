@@ -14,6 +14,7 @@ The default suite does not require a running MySQL server. It covers:
 - server session state updates
 - server message routing with socket pairs
 - protocol record bounds and truncation behavior
+- newline-delimited protocol framing for coalesced and split TCP reads
 - security checks for protocol delimiter rejection and pre-database validation
 - source-level checks for GTK idle callbacks, bounded parsing, username-based user operations, prepared statements, password hashing, session authorization, database locking, schema constraints, group protocol handling, block handling, offline-message handling, and response construction
 
