@@ -31,6 +31,51 @@ static void test_protocol_record_bounds(void) {
     assert(append_protocol_record(tiny, 0, "a", "b", "c") == -1);
 }
 
+static void test_protocol_message_framing_handles_coalesced_reads(void) {
+    char receive_buffer[128] = "";
+    size_t receive_used = 0;
+    char message[64] = "";
+
+    assert(append_received_bytes(receive_buffer, sizeof(receive_buffer), &receive_used,
+                                 "GROUP_MESSAGES:4\nGROUP_MEMBERS:4\n",
+                                 strlen("GROUP_MESSAGES:4\nGROUP_MEMBERS:4\n")) == 0);
+
+    assert(pop_protocol_message(receive_buffer, &receive_used, message, sizeof(message)) == 1);
+    assert(strcmp(message, "GROUP_MESSAGES:4") == 0);
+
+    assert(pop_protocol_message(receive_buffer, &receive_used, message, sizeof(message)) == 1);
+    assert(strcmp(message, "GROUP_MEMBERS:4") == 0);
+
+    assert(pop_protocol_message(receive_buffer, &receive_used, message, sizeof(message)) == 0);
+    assert(receive_used == 0);
+}
+
+static void test_protocol_message_framing_handles_split_reads(void) {
+    char receive_buffer[128] = "";
+    size_t receive_used = 0;
+    char message[64] = "";
+
+    assert(append_received_bytes(receive_buffer, sizeof(receive_buffer), &receive_used,
+                                 "GROUP_MESS", strlen("GROUP_MESS")) == 0);
+    assert(pop_protocol_message(receive_buffer, &receive_used, message, sizeof(message)) == 0);
+
+    assert(append_received_bytes(receive_buffer, sizeof(receive_buffer), &receive_used,
+                                 "AGES:4\r\n", strlen("AGES:4\r\n")) == 0);
+    assert(pop_protocol_message(receive_buffer, &receive_used, message, sizeof(message)) == 1);
+    assert(strcmp(message, "GROUP_MESSAGES:4") == 0);
+    assert(receive_used == 0);
+}
+
+static void test_protocol_message_framing_rejects_overflow(void) {
+    char receive_buffer[8] = "";
+    size_t receive_used = 0;
+
+    assert(append_received_bytes(receive_buffer, sizeof(receive_buffer), &receive_used,
+                                 "1234567", strlen("1234567")) == 0);
+    assert(append_received_bytes(receive_buffer, sizeof(receive_buffer), &receive_used,
+                                 "8", strlen("8")) == -1);
+}
+
 static void test_online_session_update(void) {
     reset_client_state();
 
@@ -112,6 +157,9 @@ int main(void) {
     pthread_mutex_init(&db_mutex, NULL);
 
     test_protocol_record_bounds();
+    test_protocol_message_framing_handles_coalesced_reads();
+    test_protocol_message_framing_handles_split_reads();
+    test_protocol_message_framing_rejects_overflow();
     test_online_session_update();
     test_online_lookup_uses_session_state();
     test_shutdown_signal_marks_server_stopped();

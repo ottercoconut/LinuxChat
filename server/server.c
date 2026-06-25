@@ -1883,20 +1883,88 @@ void notify_friends_status(int user_id, const char *command, const char *usernam
     }
 }
 
+int append_received_bytes(char *receive_buffer, size_t receive_buffer_size,
+                          size_t *receive_used, const char *chunk, size_t chunk_size) {
+    if (receive_buffer == NULL || receive_used == NULL || chunk == NULL ||
+        receive_buffer_size == 0 || *receive_used >= receive_buffer_size ||
+        chunk_size >= receive_buffer_size - *receive_used) {
+        return -1;
+    }
+
+    memcpy(receive_buffer + *receive_used, chunk, chunk_size);
+    *receive_used += chunk_size;
+    receive_buffer[*receive_used] = '\0';
+    return 0;
+}
+
+int pop_protocol_message(char *receive_buffer, size_t *receive_used,
+                         char *message, size_t message_size) {
+    char *newline;
+    size_t line_size;
+    size_t consumed;
+
+    if (receive_buffer == NULL || receive_used == NULL || message == NULL ||
+        message_size == 0) {
+        return -1;
+    }
+
+    newline = memchr(receive_buffer, '\n', *receive_used);
+    if (newline == NULL) {
+        return 0;
+    }
+
+    line_size = (size_t)(newline - receive_buffer);
+    if (line_size > 0 && receive_buffer[line_size - 1] == '\r') {
+        line_size--;
+    }
+    if (line_size >= message_size) {
+        return -1;
+    }
+
+    memcpy(message, receive_buffer, line_size);
+    message[line_size] = '\0';
+
+    consumed = (size_t)(newline - receive_buffer) + 1;
+    memmove(receive_buffer, receive_buffer + consumed, *receive_used - consumed);
+    *receive_used -= consumed;
+    receive_buffer[*receive_used] = '\0';
+
+    return 1;
+}
+
 void *handle_client(void *arg) {
     Client *client = (Client *)arg;
     char buffer[BUFFER_SIZE];
+    char recv_buffer[BUFFER_SIZE];
+    char receive_buffer[BUFFER_SIZE * 4] = "";
     char response[BUFFER_SIZE];
+    size_t receive_used = 0;
+    int should_disconnect = 0;
 
     printf("新客户端连接: %s:%d\n", inet_ntoa(client->addr.sin_addr), ntohs(client->addr.sin_port));
 
     while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int bytes_read = recv(client->sockfd, buffer, BUFFER_SIZE - 1, 0);
+        int frame_status;
+
+        memset(recv_buffer, 0, BUFFER_SIZE);
+        int bytes_read = recv(client->sockfd, recv_buffer, BUFFER_SIZE - 1, 0);
 
         if (bytes_read <= 0) {
             printf("客户端断开连接: %s:%d\n", inet_ntoa(client->addr.sin_addr), ntohs(client->addr.sin_port));
             break;
+        }
+
+        if (append_received_bytes(receive_buffer, sizeof(receive_buffer), &receive_used,
+                                  recv_buffer, (size_t)bytes_read) != 0) {
+            fprintf(stderr, "客户端消息过长，断开连接: %s:%d\n",
+                    inet_ntoa(client->addr.sin_addr), ntohs(client->addr.sin_port));
+            break;
+        }
+
+        while ((frame_status = pop_protocol_message(receive_buffer, &receive_used,
+                                                    buffer, sizeof(buffer))) == 1) {
+        if (buffer[0] == '\0') {
+            continue;
         }
 
         printf("收到消息: %s\n", buffer);
@@ -2295,6 +2363,17 @@ void *handle_client(void *arg) {
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (strcmp(buffer, "QUIT") == 0) {
+            should_disconnect = 1;
+            break;
+        }
+        }
+
+        if (frame_status < 0) {
+            fprintf(stderr, "客户端协议帧过长，断开连接: %s:%d\n",
+                    inet_ntoa(client->addr.sin_addr), ntohs(client->addr.sin_port));
+            break;
+        }
+        if (should_disconnect) {
             break;
         }
     }
