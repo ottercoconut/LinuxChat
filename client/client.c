@@ -417,34 +417,23 @@ void on_create_group_clicked(GtkButton *button, gpointer user_data) {
     GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     GtkWidget *name_label = gtk_label_new("群名称:");
     GtkWidget *name_entry = gtk_entry_new();
-    GtkWidget *members_label = gtk_label_new("初始成员ID（逗号分隔，可留空）:");
-    GtkWidget *members_entry = gtk_entry_new();
 
     gtk_container_add(GTK_CONTAINER(content_area), name_label);
     gtk_container_add(GTK_CONTAINER(content_area), name_entry);
-    gtk_container_add(GTK_CONTAINER(content_area), members_label);
-    gtk_container_add(GTK_CONTAINER(content_area), members_entry);
     gtk_widget_show_all(content_area);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
         const char *name = gtk_entry_get_text(GTK_ENTRY(name_entry));
-        const char *members = gtk_entry_get_text(GTK_ENTRY(members_entry));
 
         if (strlen(name) > 0 && strlen(name) < 80 &&
-            is_client_protocol_safe(name, FALSE) &&
-            (strlen(members) == 0 || is_client_protocol_safe(members, TRUE))) {
+            is_client_protocol_safe(name, FALSE)) {
             char msg[BUFFER_SIZE];
-            int written;
-            if (strlen(members) > 0) {
-                written = snprintf(msg, sizeof(msg), "CREATE_GROUP:%s,%s", name, members);
-            } else {
-                written = snprintf(msg, sizeof(msg), "CREATE_GROUP:%s", name);
-            }
+            int written = snprintf(msg, sizeof(msg), "CREATE_GROUP:%s", name);
             if (written < (int)sizeof(msg)) {
                 send_message_to_server(msg);
             }
         } else {
-            gtk_label_set_text(GTK_LABEL(status_label), "群名称或成员ID格式不正确");
+            gtk_label_set_text(GTK_LABEL(status_label), "请输入有效的群名称");
         }
     }
 
@@ -899,17 +888,23 @@ void *receive_messages(void *arg) {
                    HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_SUCCESS")) {
             gdk_threads_add_idle(refresh_groups_after_change, NULL);
         } else if (HAS_PREFIX(buffer, "CREATE_GROUP_FAILED")) {
-            gdk_threads_add_idle(show_status_message, g_strdup("创建群聊失败，请检查群名和成员ID"));
+            gdk_threads_add_idle(show_status_message, g_strdup("创建群聊失败，请检查群名称"));
+        } else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_FAILED_ALREADY_MEMBER")) {
+            gdk_threads_add_idle(show_message_dialog, g_strdup("该用户已经是群成员，无需重复添加"));
+        } else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_FAILED_BLOCKED")) {
+            gdk_threads_add_idle(show_message_dialog, g_strdup("你与该用户存在拉黑关系，无法添加为群成员"));
         } else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_FAILED")) {
-            gdk_threads_add_idle(show_status_message, g_strdup("添加群成员失败，请确认用户名和权限"));
+            gdk_threads_add_idle(show_message_dialog, g_strdup("添加群成员失败，请确认用户名和权限"));
         } else if (HAS_PREFIX(buffer, "BLOCK_USER_SUCCESS")) {
             gdk_threads_add_idle(show_status_message, g_strdup("已拉黑该用户"));
         } else if (HAS_PREFIX(buffer, "BLOCK_USER_FAILED")) {
             gdk_threads_add_idle(show_status_message, g_strdup("拉黑失败，请确认用户名是否正确"));
         } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_SUCCESS")) {
-            gdk_threads_add_idle(show_status_message, g_strdup("已解除拉黑"));
+            gdk_threads_add_idle(show_message_dialog, g_strdup("已解除拉黑"));
+        } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_FAILED_NOT_BLOCKED")) {
+            gdk_threads_add_idle(show_message_dialog, g_strdup("该用户未被拉黑，无需解除拉黑"));
         } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_FAILED")) {
-            gdk_threads_add_idle(show_status_message, g_strdup("解除拉黑失败，请确认用户名是否正确或已拉黑"));
+            gdk_threads_add_idle(show_message_dialog, g_strdup("解除拉黑失败，请确认用户名是否正确"));
         } else if (HAS_PREFIX(buffer, "FRIEND_ONLINE:") ||
                    HAS_PREFIX(buffer, "FRIEND_OFFLINE:")) {
             gdk_threads_add_idle(parse_friend_status, g_strdup(buffer));
