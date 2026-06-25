@@ -483,30 +483,16 @@ void on_add_group_member_clicked(GtkButton *button, gpointer user_data) {
     gtk_widget_destroy(dialog);
 }
 
-void on_block_user_clicked(GtkButton *button, gpointer user_data) {
-    (void)button;
-    (void)user_data;
-
-    if (selected_friend_id <= 0 || selected_friend_username[0] == '\0') {
-        gtk_label_set_text(GTK_LABEL(status_label), "请先选择要屏蔽的好友");
-        return;
-    }
-
-    char msg[BUFFER_SIZE];
-    if (snprintf(msg, sizeof(msg), "BLOCK_USER_USERNAME:%s", selected_friend_username) < (int)sizeof(msg)) {
-        send_message_to_server(msg);
-    }
-}
-
-void on_unblock_user_clicked(GtkButton *button, gpointer user_data) {
-    (void)button;
-    (void)user_data;
-
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("解除屏蔽", GTK_WINDOW(window),
+void send_user_relation_request(const char *dialog_title,
+                                const char *entry_label,
+                                gboolean block_user,
+                                const char *invalid_message,
+                                const char *pending_message) {
+    GtkWidget *dialog = gtk_dialog_new_with_buttons(dialog_title, GTK_WINDOW(window),
                                                     GTK_DIALOG_MODAL, "确定", GTK_RESPONSE_OK,
                                                     "取消", GTK_RESPONSE_CANCEL, NULL);
     GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget *label = gtk_label_new("请输入用户名:");
+    GtkWidget *label = gtk_label_new(entry_label);
     GtkWidget *entry = gtk_entry_new();
 
     gtk_container_add(GTK_CONTAINER(content_area), label);
@@ -514,20 +500,49 @@ void on_unblock_user_clicked(GtkButton *button, gpointer user_data) {
     gtk_widget_show_all(content_area);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-        const char *blocked_username = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (strlen(blocked_username) > 0 &&
-            strlen(blocked_username) < 50 &&
-            is_client_protocol_safe(blocked_username, FALSE)) {
+        const char *username = gtk_entry_get_text(GTK_ENTRY(entry));
+        if (strlen(username) > 0 &&
+            strlen(username) < 50 &&
+            is_client_protocol_safe(username, FALSE)) {
             char msg[BUFFER_SIZE];
-            if (snprintf(msg, sizeof(msg), "UNBLOCK_USER_USERNAME:%s", blocked_username) < (int)sizeof(msg)) {
+            int written;
+            if (block_user) {
+                written = snprintf(msg, sizeof(msg), "BLOCK_USER_USERNAME:%s", username);
+            } else {
+                written = snprintf(msg, sizeof(msg), "UNBLOCK_USER_USERNAME:%s", username);
+            }
+            if (written < (int)sizeof(msg)) {
                 send_message_to_server(msg);
+                gtk_label_set_text(GTK_LABEL(status_label), pending_message);
             }
         } else {
-            gtk_label_set_text(GTK_LABEL(status_label), "请输入有效的用户名");
+            gtk_label_set_text(GTK_LABEL(status_label), invalid_message);
         }
     }
 
     gtk_widget_destroy(dialog);
+}
+
+void on_block_user_clicked(GtkButton *button, gpointer user_data) {
+    (void)button;
+    (void)user_data;
+
+    send_user_relation_request("拉黑好友",
+                               "请输入用户名:",
+                               TRUE,
+                               "请输入有效的用户名",
+                               "拉黑请求已发送");
+}
+
+void on_unblock_user_clicked(GtkButton *button, gpointer user_data) {
+    (void)button;
+    (void)user_data;
+
+    send_user_relation_request("解除拉黑",
+                               "请输入用户名:",
+                               FALSE,
+                               "请输入有效的用户名",
+                               "解除拉黑请求已发送");
 }
 
 gboolean parse_friends_list(gpointer data) {
@@ -798,13 +813,6 @@ gboolean refresh_groups_after_change(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-gboolean show_block_status(gpointer data) {
-    (void)data;
-
-    gtk_label_set_text(GTK_LABEL(status_label), "屏蔽设置已更新");
-    return G_SOURCE_REMOVE;
-}
-
 gboolean show_status_message(gpointer data) {
     char *message = (char *)data;
 
@@ -864,9 +872,13 @@ void *receive_messages(void *arg) {
         } else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_FAILED")) {
             gdk_threads_add_idle(show_status_message, g_strdup("添加群成员失败，请确认用户名和权限"));
         } else if (HAS_PREFIX(buffer, "BLOCK_USER_SUCCESS")) {
-            gdk_threads_add_idle(show_block_status, NULL);
+            gdk_threads_add_idle(show_status_message, g_strdup("已拉黑该用户"));
+        } else if (HAS_PREFIX(buffer, "BLOCK_USER_FAILED")) {
+            gdk_threads_add_idle(show_status_message, g_strdup("拉黑失败，请确认用户名是否正确"));
         } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_SUCCESS")) {
-            gdk_threads_add_idle(show_block_status, NULL);
+            gdk_threads_add_idle(show_status_message, g_strdup("已解除拉黑"));
+        } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_FAILED")) {
+            gdk_threads_add_idle(show_status_message, g_strdup("解除拉黑失败，请确认用户名是否正确或已拉黑"));
         } else if (HAS_PREFIX(buffer, "FRIEND_ONLINE:") ||
                    HAS_PREFIX(buffer, "FRIEND_OFFLINE:")) {
             gdk_threads_add_idle(parse_friend_status, g_strdup(buffer));
@@ -932,8 +944,8 @@ void build_chat_window(void) {
     GtkWidget *add_friend_button = gtk_button_new_with_label("添加好友");
     GtkWidget *create_group_button = gtk_button_new_with_label("创建群聊");
     GtkWidget *add_group_member_button = gtk_button_new_with_label("添加群成员");
-    GtkWidget *block_user_button = gtk_button_new_with_label("屏蔽好友");
-    GtkWidget *unblock_user_button = gtk_button_new_with_label("解除屏蔽");
+    GtkWidget *block_user_button = gtk_button_new_with_label("拉黑好友");
+    GtkWidget *unblock_user_button = gtk_button_new_with_label("解除拉黑");
     gtk_container_add(GTK_CONTAINER(user_vbox), user_label);
     gtk_container_add(GTK_CONTAINER(user_vbox), add_friend_button);
     gtk_container_add(GTK_CONTAINER(user_vbox), create_group_button);

@@ -8,7 +8,7 @@ LinuxChat 是一个 Linux 程序设计课程实践项目，也是一个基于 Li
 - 好友添加与好友列表查询
 - 一对一实时文本聊天
 - 群聊创建、群列表、群成员查看和群聊文本消息
-- 好友上线/离线通知、用户屏蔽和解除屏蔽
+- 好友上线/离线通知、用户拉黑和解除拉黑
 - 离线私聊/群聊未读提示
 - 聊天记录持久化存储
 - GTK3 图形客户端
@@ -263,10 +263,10 @@ COMMAND:param1,param2,param3
 | ADD_GROUP_MEMBER | group_id,user_id | 添加群成员，旧 ID 协议兼容 |
 | GROUP_MESSAGES | group_id | 获取群聊历史 |
 | SEND_GROUP | sender_id,group_id,content | 发送群消息 |
-| BLOCK_USER_USERNAME | username | 屏蔽用户，客户端默认使用用户名 |
-| BLOCK_USER | user_id,blocked_id | 屏蔽用户，旧 ID 协议兼容 |
-| UNBLOCK_USER_USERNAME | username | 解除屏蔽，客户端默认使用用户名 |
-| UNBLOCK_USER | user_id,blocked_id | 解除屏蔽，旧 ID 协议兼容 |
+| BLOCK_USER_USERNAME | username | 拉黑用户，客户端默认使用用户名 |
+| BLOCK_USER | user_id,blocked_id | 拉黑用户，旧 ID 协议兼容 |
+| UNBLOCK_USER_USERNAME | username | 解除拉黑，客户端默认使用用户名 |
+| UNBLOCK_USER | user_id,blocked_id | 解除拉黑，旧 ID 协议兼容 |
 | OFFLINE_MESSAGES | user_id | 获取未读消息摘要 |
 | QUIT | 无 | 断开连接 |
 
@@ -278,7 +278,7 @@ COMMAND:param1,param2,param3
 
 - `users`：内部数字主键、唯一用户名、SHA-256 密码哈希、昵称和创建时间
 - `friends`：用户之间的好友关系
-- `friend_blocks`：用户屏蔽关系
+- `friend_blocks`：用户拉黑关系
 - `messages`：私聊消息内容、发送方、接收方、未读状态和时间戳
 - `chat_groups`：群聊基本信息和创建者
 - `group_members`：群成员关系，使用唯一约束避免重复成员
@@ -294,7 +294,7 @@ COMMAND:param1,param2,param3
 
 ## 当前状态
 
-当前版本是课程设计/学习用途实现，已覆盖注册登录、好友、私聊、群聊、屏蔽、在线状态通知和离线消息提示等主要功能链路。前期已修复登录后聊天链路无法正常工作的关键问题，包括客户端接收线程启动时机、聊天页切换、服务端在线用户状态同步和实时消息昵称获取。随后又补充了聊天稳定性和数据正确性修复，包括历史消息时间戳解析、历史响应缓冲区、socket 失败判断和全局 MySQL 连接并发访问保护。安全加固部分已完成 SQL 预处理语句、密码哈希、协议分隔符校验、客户端有界格式化，以及好友/群聊/消息操作基于登录会话授权。
+当前版本是课程设计/学习用途实现，已覆盖注册登录、好友、私聊、群聊、拉黑、在线状态通知和离线消息提示等主要功能链路。前期已修复登录后聊天链路无法正常工作的关键问题，包括客户端接收线程启动时机、聊天页切换、服务端在线用户状态同步和实时消息昵称获取。随后又补充了聊天稳定性和数据正确性修复，包括历史消息时间戳解析、历史响应缓冲区、socket 失败判断和全局 MySQL 连接并发访问保护。安全加固部分已完成 SQL 预处理语句、密码哈希、协议分隔符校验、客户端有界格式化，以及好友/群聊/消息操作基于登录会话授权。
 
 后续可以继续完善：
 
