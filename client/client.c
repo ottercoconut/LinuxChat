@@ -40,7 +40,21 @@ int recv_thread_running = 0;
 
 void send_message_to_server(const char *msg) {
     if (sockfd >= 0) {
-        send(sockfd, msg, strlen(msg), 0);
+        char framed_msg[BUFFER_SIZE + 2];
+        int written = snprintf(framed_msg, sizeof(framed_msg), "%s\n", msg);
+
+        if (written > 0 && written < (int)sizeof(framed_msg)) {
+            size_t total_sent = 0;
+            size_t frame_size = (size_t)written;
+
+            while (total_sent < frame_size) {
+                ssize_t sent = send(sockfd, framed_msg + total_sent, frame_size - total_sent, 0);
+                if (sent <= 0) {
+                    break;
+                }
+                total_sent += (size_t)sent;
+            }
+        }
     }
 }
 
