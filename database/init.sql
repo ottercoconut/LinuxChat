@@ -2,11 +2,21 @@ CREATE DATABASE IF NOT EXISTS chat_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unic
 
 USE chat_db;
 
+SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS group_message_deliveries;
+DROP TABLE IF EXISTS group_messages;
+DROP TABLE IF EXISTS group_members;
+DROP TABLE IF EXISTS chat_groups;
+DROP TABLE IF EXISTS friend_blocks;
+DROP TABLE IF EXISTS friends;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS users;
+SET FOREIGN_KEY_CHECKS = 1;
+
 CREATE TABLE IF NOT EXISTS users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
+    id INT PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
     password VARCHAR(100) NOT NULL,
-    nickname VARCHAR(50) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -81,26 +91,26 @@ CREATE TABLE IF NOT EXISTS group_message_deliveries (
     UNIQUE KEY unique_group_delivery (message_id, user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT IGNORE INTO users (username, password, nickname) VALUES
-('admin', SHA2('admin123', 256), '管理员'),
-('user1', SHA2('user123', 256), '用户1'),
-('user2', SHA2('user123', 256), '用户2'),
-('user3', SHA2('user123', 256), '用户3');
+INSERT IGNORE INTO users (id, username, password) VALUES
+(83046127, 'admin', SHA2('admin123', 256)),
+(27491583, 'user1', SHA2('user123', 256)),
+(69173840, 'user2', SHA2('user123', 256)),
+(45820619, 'user3', SHA2('user123', 256));
 
 INSERT IGNORE INTO friends (user_id, friend_id, status) VALUES
-(1, 2, 1),
-(1, 3, 1),
-(1, 4, 1),
-(2, 1, 1),
-(3, 1, 1),
-(4, 1, 1),
-(2, 3, 1),
-(3, 2, 1);
+(83046127, 27491583, 1),
+(83046127, 69173840, 1),
+(83046127, 45820619, 1),
+(27491583, 83046127, 1),
+(69173840, 83046127, 1),
+(45820619, 83046127, 1),
+(27491583, 69173840, 1),
+(69173840, 27491583, 1);
 
 INSERT IGNORE INTO chat_groups (id, name, owner_id) VALUES
-(1, '默认群聊', 1);
+(1, '默认群聊', 83046127);
 
 INSERT IGNORE INTO group_members (group_id, user_id) VALUES
-(1, 1),
-(1, 2),
-(1, 3);
+(1, 83046127),
+(1, 27491583),
+(1, 69173840);

@@ -18,11 +18,10 @@ int main(void) {
     assert(!is_protocol_safe_text("alice;bob", 1));
     assert(!is_protocol_safe_text("alice\nbob", 1));
 
-    assert(register_user(NULL, "pw", "Nick") == REGISTER_ERROR_INVALID_INPUT);
-    assert(register_user("alice", NULL, "Nick") == REGISTER_ERROR_INVALID_INPUT);
-    assert(register_user("bad,user", "pw", "Nick") == REGISTER_ERROR_INVALID_INPUT);
-    assert(register_user("alice", "bad:pw", "Nick") == REGISTER_ERROR_INVALID_INPUT);
-    assert(register_user("alice", "pw", "Bad;Nick") == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user(NULL, "pw") == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user("alice", NULL) == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user("bad,user", "pw") == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user("alice", "bad:pw") == REGISTER_ERROR_INVALID_INPUT);
 
     assert(get_user_id_by_username(NULL, &resolved_user_id) == -1);
     assert(get_user_id_by_username("alice", NULL) == -1);

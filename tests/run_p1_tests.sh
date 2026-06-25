@@ -114,7 +114,7 @@ assert_not_contains "$SERVER_SOURCE" "strcat("
 assert_not_contains "$SERVER_SOURCE" "strcpy("
 
 assert_contains "$CLIENT_SOURCE" "%1023[^:]:%49[^:]:%49[^;];"
-assert_contains "$CLIENT_SOURCE" "snprintf(msg, sizeof(msg), \"%s [%s]: %s\\n\", nickname, timestamp, content)"
+assert_contains "$CLIENT_SOURCE" "snprintf(msg, sizeof(msg), \"%s [%s]: %s\\n\", username, timestamp, content)"
 assert_contains "$CLIENT_SOURCE" "%Y-%m-%d %H-%M-%S"
 assert_not_contains "$CLIENT_SOURCE" "%H:%M:%S"
 
