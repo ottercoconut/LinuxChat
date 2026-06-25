@@ -28,7 +28,6 @@ typedef struct {
     struct sockaddr_in addr;
     int user_id;
     char username[50];
-    char nickname[50];
 } Client;
 
 Client clients[MAX_CLIENTS];
@@ -125,6 +124,8 @@ int append_protocol_record(char *result, size_t result_size,
     return 0;
 }
 
+static int user_exists_locked(int user_id);
+
 static int format_local_protocol_timestamp(char *timestamp, size_t timestamp_size) {
     time_t now;
     struct tm tm_info;
@@ -191,15 +192,13 @@ cleanup:
     return status;
 }
 
-void update_client_session(int sockfd, int user_id, const char *username, const char *nickname) {
+void update_client_session(int sockfd, int user_id, const char *username) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < client_count; i++) {
         if (clients[i].sockfd == sockfd) {
             clients[i].user_id = user_id;
             strncpy(clients[i].username, username, sizeof(clients[i].username) - 1);
             clients[i].username[sizeof(clients[i].username) - 1] = '\0';
-            strncpy(clients[i].nickname, nickname, sizeof(clients[i].nickname) - 1);
-            clients[i].nickname[sizeof(clients[i].nickname) - 1] = '\0';
             break;
         }
     }
@@ -217,10 +216,9 @@ void init_database(void) {
 
 void create_tables(void) {
     char *create_users = "CREATE TABLE IF NOT EXISTS users ("
-                         "id INT AUTO_INCREMENT PRIMARY KEY,"
+                         "id INT PRIMARY KEY,"
                          "username VARCHAR(50) UNIQUE NOT NULL,"
                          "password VARCHAR(100) NOT NULL,"
-                         "nickname VARCHAR(50) NOT NULL,"
                          "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)";
 
     char *create_messages = "CREATE TABLE IF NOT EXISTS messages ("
@@ -320,13 +318,34 @@ void create_tables(void) {
     printf("数据库表初始化完成\n");
 }
 
-int register_user(const char *username, const char *password, const char *nickname) {
+static int generate_candidate_user_id(void) {
+    static int random_seeded = 0;
+
+    if (!random_seeded) {
+        srand((unsigned int)(time(NULL) ^ getpid()));
+        random_seeded = 1;
+    }
+
+    return 10000000 + rand() % 90000000;
+}
+
+static int generate_unique_user_id_locked(void) {
+    for (int attempt = 0; attempt < 100; attempt++) {
+        int candidate = generate_candidate_user_id();
+        if (!user_exists_locked(candidate)) {
+            return candidate;
+        }
+    }
+
+    return -1;
+}
+
+int register_user(const char *username, const char *password) {
     const char *statement =
-        "INSERT INTO users (username, password, nickname) VALUES (?, SHA2(?, 256), ?)";
+        "INSERT INTO users (id, username, password) VALUES (?, ?, SHA2(?, 256))";
     MYSQL_STMT *stmt = NULL;
     MYSQL_BIND params[3];
-    unsigned long lengths[3];
-    char effective_nickname[50];
+    unsigned long lengths[2];
     int user_id = REGISTER_ERROR_SERVER;
 
     if (username == NULL ||
@@ -334,24 +353,22 @@ int register_user(const char *username, const char *password, const char *nickna
         strlen(username) >= 50 ||
         strlen(password) >= 50 ||
         !is_protocol_safe_text(username, 0) ||
-        !is_protocol_safe_text(password, 0) ||
-        (nickname != NULL && nickname[0] != '\0' &&
-         (strlen(nickname) >= 50 || !is_protocol_safe_text(nickname, 0)))) {
+        !is_protocol_safe_text(password, 0)) {
         return REGISTER_ERROR_INVALID_INPUT;
     }
 
-    if (nickname == NULL || nickname[0] == '\0') {
-        snprintf(effective_nickname, sizeof(effective_nickname), "%s", username);
-    } else {
-        snprintf(effective_nickname, sizeof(effective_nickname), "%s", nickname);
+    pthread_mutex_lock(&db_mutex);
+    user_id = generate_unique_user_id_locked();
+    if (user_id <= 0) {
+        user_id = REGISTER_ERROR_SERVER;
+        goto cleanup;
     }
 
     memset(params, 0, sizeof(params));
-    bind_string_param(&params[0], username, &lengths[0]);
-    bind_string_param(&params[1], password, &lengths[1]);
-    bind_string_param(&params[2], effective_nickname, &lengths[2]);
+    bind_int_param(&params[0], &user_id);
+    bind_string_param(&params[1], username, &lengths[0]);
+    bind_string_param(&params[2], password, &lengths[1]);
 
-    pthread_mutex_lock(&db_mutex);
     stmt = mysql_stmt_init(db_conn);
     if (stmt == NULL) {
         fprintf(stderr, "初始化注册语句失败: %s\n", mysql_error(db_conn));
@@ -368,8 +385,6 @@ int register_user(const char *username, const char *password, const char *nickna
         goto cleanup;
     }
 
-    user_id = (int)mysql_insert_id(db_conn);
-
 cleanup:
     if (stmt != NULL) {
         mysql_stmt_close(stmt);
@@ -378,21 +393,18 @@ cleanup:
     return user_id;
 }
 
-int login_user(const char *username, const char *password, char *nickname, int *user_id) {
+int login_user(const char *username, const char *password, int *user_id) {
     const char *statement =
-        "SELECT id, nickname FROM users WHERE username = ? AND password = SHA2(?, 256)";
+        "SELECT id FROM users WHERE username = ? AND password = SHA2(?, 256)";
     MYSQL_STMT *stmt = NULL;
     MYSQL_BIND params[2];
-    MYSQL_BIND results[2];
+    MYSQL_BIND results[1];
     unsigned long param_lengths[2];
-    unsigned long nickname_length = 0;
-    char nickname_buffer[50] = "";
     int found_user_id = 0;
     int status = -1;
 
     if (!is_protocol_safe_text(username, 0) ||
         !is_protocol_safe_text(password, 0) ||
-        nickname == NULL ||
         user_id == NULL) {
         return -1;
     }
@@ -404,10 +416,6 @@ int login_user(const char *username, const char *password, char *nickname, int *
     memset(results, 0, sizeof(results));
     results[0].buffer_type = MYSQL_TYPE_LONG;
     results[0].buffer = &found_user_id;
-    results[1].buffer_type = MYSQL_TYPE_STRING;
-    results[1].buffer = nickname_buffer;
-    results[1].buffer_length = sizeof(nickname_buffer) - 1;
-    results[1].length = &nickname_length;
 
     pthread_mutex_lock(&db_mutex);
     stmt = mysql_stmt_init(db_conn);
@@ -426,15 +434,7 @@ int login_user(const char *username, const char *password, char *nickname, int *
 
     int fetch_status = mysql_stmt_fetch(stmt);
     if (fetch_status == 0 || fetch_status == MYSQL_DATA_TRUNCATED) {
-        size_t copy_length = nickname_length < 49 ? nickname_length : 49;
-        nickname_buffer[copy_length] = '\0';
-        if (!is_protocol_safe_text(nickname_buffer, 0)) {
-            goto cleanup;
-        }
-
         *user_id = found_user_id;
-        strncpy(nickname, nickname_buffer, 49);
-        nickname[49] = '\0';
         status = 0;
     }
 
@@ -622,7 +622,7 @@ int add_friend_by_username(int user_id, const char *friend_username) {
 
 void get_friends(int user_id, char *result, size_t result_size) {
     char query[500];
-    snprintf(query, sizeof(query), "SELECT u.id, u.username, u.nickname FROM friends f "
+    snprintf(query, sizeof(query), "SELECT u.id, u.username, u.username FROM friends f "
                                    "JOIN users u ON f.friend_id = u.id WHERE f.user_id = %d", user_id);
 
     if (result_size == 0) {
@@ -1175,7 +1175,7 @@ cleanup:
 
 void get_groups(int user_id, char *result, size_t result_size) {
     const char *statement =
-        "SELECT g.id, g.name, u.nickname FROM chat_groups g "
+        "SELECT g.id, g.name, u.username FROM chat_groups g "
         "JOIN group_members gm ON g.id = gm.group_id "
         "JOIN users u ON g.owner_id = u.id "
         "WHERE gm.user_id = ? ORDER BY g.created_at, g.id";
@@ -1185,9 +1185,9 @@ void get_groups(int user_id, char *result, size_t result_size) {
     int bound_user_id = user_id;
     int group_id = 0;
     char group_name[80] = "";
-    char owner_nickname[50] = "";
+    char owner_username[50] = "";
     unsigned long group_name_length = 0;
-    unsigned long owner_nickname_length = 0;
+    unsigned long owner_username_length = 0;
     char id_text[16];
 
     if (result_size == 0) {
@@ -1209,9 +1209,9 @@ void get_groups(int user_id, char *result, size_t result_size) {
     results[1].buffer_length = sizeof(group_name) - 1;
     results[1].length = &group_name_length;
     results[2].buffer_type = MYSQL_TYPE_STRING;
-    results[2].buffer = owner_nickname;
-    results[2].buffer_length = sizeof(owner_nickname) - 1;
-    results[2].length = &owner_nickname_length;
+    results[2].buffer = owner_username;
+    results[2].buffer_length = sizeof(owner_username) - 1;
+    results[2].length = &owner_username_length;
 
     pthread_mutex_lock(&db_mutex);
     stmt = mysql_stmt_init(db_conn);
@@ -1230,9 +1230,9 @@ void get_groups(int user_id, char *result, size_t result_size) {
 
     while (mysql_stmt_fetch(stmt) == 0) {
         group_name[group_name_length < sizeof(group_name) ? group_name_length : sizeof(group_name) - 1] = '\0';
-        owner_nickname[owner_nickname_length < sizeof(owner_nickname) ? owner_nickname_length : sizeof(owner_nickname) - 1] = '\0';
+        owner_username[owner_username_length < sizeof(owner_username) ? owner_username_length : sizeof(owner_username) - 1] = '\0';
         snprintf(id_text, sizeof(id_text), "%d", group_id);
-        if (append_protocol_record(result, result_size, id_text, group_name, owner_nickname) != 0) {
+        if (append_protocol_record(result, result_size, id_text, group_name, owner_username) != 0) {
             fprintf(stderr, "群列表结果过长，已截断\n");
             break;
         }
@@ -1247,7 +1247,7 @@ cleanup:
 
 int get_group_members(int requester_id, int group_id, char *result, size_t result_size) {
     const char *statement =
-        "SELECT u.id, u.username, u.nickname FROM group_members gm "
+        "SELECT u.id, u.username, u.username FROM group_members gm "
         "JOIN users u ON gm.user_id = u.id "
         "WHERE gm.group_id = ? ORDER BY gm.created_at, gm.id";
     MYSQL_STMT *stmt = NULL;
@@ -1256,9 +1256,9 @@ int get_group_members(int requester_id, int group_id, char *result, size_t resul
     int bound_group_id = group_id;
     int member_id = 0;
     char username[50] = "";
-    char nickname[50] = "";
+    char display_username[50] = "";
     unsigned long username_length = 0;
-    unsigned long nickname_length = 0;
+    unsigned long display_username_length = 0;
     char id_text[16];
     int status = -1;
 
@@ -1281,9 +1281,9 @@ int get_group_members(int requester_id, int group_id, char *result, size_t resul
     results[1].buffer_length = sizeof(username) - 1;
     results[1].length = &username_length;
     results[2].buffer_type = MYSQL_TYPE_STRING;
-    results[2].buffer = nickname;
-    results[2].buffer_length = sizeof(nickname) - 1;
-    results[2].length = &nickname_length;
+    results[2].buffer = display_username;
+    results[2].buffer_length = sizeof(display_username) - 1;
+    results[2].length = &display_username_length;
 
     pthread_mutex_lock(&db_mutex);
     stmt = mysql_stmt_init(db_conn);
@@ -1302,9 +1302,9 @@ int get_group_members(int requester_id, int group_id, char *result, size_t resul
 
     while (mysql_stmt_fetch(stmt) == 0) {
         username[username_length < sizeof(username) ? username_length : sizeof(username) - 1] = '\0';
-        nickname[nickname_length < sizeof(nickname) ? nickname_length : sizeof(nickname) - 1] = '\0';
+        display_username[display_username_length < sizeof(display_username) ? display_username_length : sizeof(display_username) - 1] = '\0';
         snprintf(id_text, sizeof(id_text), "%d", member_id);
-        if (append_protocol_record(result, result_size, id_text, username, nickname) != 0) {
+        if (append_protocol_record(result, result_size, id_text, username, display_username) != 0) {
             fprintf(stderr, "群成员列表结果过长，已截断\n");
             break;
         }
@@ -1321,7 +1321,7 @@ cleanup:
 
 void get_messages(int user_id, int friend_id, char *result, size_t result_size) {
     char query[500];
-    snprintf(query, sizeof(query), "SELECT m.content, DATE_FORMAT(m.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s'), u.nickname FROM messages m "
+    snprintf(query, sizeof(query), "SELECT m.content, DATE_FORMAT(m.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s'), u.username FROM messages m "
                                    "JOIN users u ON m.sender_id = u.id WHERE "
                                    "(m.sender_id = %d AND m.receiver_id = %d) OR "
                                    "(m.sender_id = %d AND m.receiver_id = %d) ORDER BY m.timestamp",
@@ -1592,7 +1592,7 @@ cleanup:
 
 int get_group_messages(int requester_id, int group_id, char *result, size_t result_size) {
     const char *statement =
-        "SELECT gm.content, DATE_FORMAT(gm.timestamp, '%Y-%m-%d %H-%i-%s'), u.nickname "
+        "SELECT gm.content, DATE_FORMAT(gm.timestamp, '%Y-%m-%d %H-%i-%s'), u.username "
         "FROM group_messages gm JOIN users u ON gm.sender_id = u.id "
         "WHERE gm.group_id = ? ORDER BY gm.timestamp, gm.id";
     MYSQL_STMT *stmt = NULL;
@@ -1601,10 +1601,10 @@ int get_group_messages(int requester_id, int group_id, char *result, size_t resu
     int bound_group_id = group_id;
     char content[BUFFER_SIZE] = "";
     char timestamp[50] = "";
-    char nickname[50] = "";
+    char username[50] = "";
     unsigned long content_length = 0;
     unsigned long timestamp_length = 0;
-    unsigned long nickname_length = 0;
+    unsigned long username_length = 0;
     int status = -1;
 
     if (result_size == 0) {
@@ -1628,9 +1628,9 @@ int get_group_messages(int requester_id, int group_id, char *result, size_t resu
     results[1].buffer_length = sizeof(timestamp) - 1;
     results[1].length = &timestamp_length;
     results[2].buffer_type = MYSQL_TYPE_STRING;
-    results[2].buffer = nickname;
-    results[2].buffer_length = sizeof(nickname) - 1;
-    results[2].length = &nickname_length;
+    results[2].buffer = username;
+    results[2].buffer_length = sizeof(username) - 1;
+    results[2].length = &username_length;
 
     pthread_mutex_lock(&db_mutex);
     stmt = mysql_stmt_init(db_conn);
@@ -1650,8 +1650,8 @@ int get_group_messages(int requester_id, int group_id, char *result, size_t resu
     while (mysql_stmt_fetch(stmt) == 0) {
         content[content_length < sizeof(content) ? content_length : sizeof(content) - 1] = '\0';
         timestamp[timestamp_length < sizeof(timestamp) ? timestamp_length : sizeof(timestamp) - 1] = '\0';
-        nickname[nickname_length < sizeof(nickname) ? nickname_length : sizeof(nickname) - 1] = '\0';
-        if (append_protocol_record(result, result_size, content, timestamp, nickname) != 0) {
+        username[username_length < sizeof(username) ? username_length : sizeof(username) - 1] = '\0';
+        if (append_protocol_record(result, result_size, content, timestamp, username) != 0) {
             fprintf(stderr, "群消息列表结果过长，已截断\n");
             break;
         }
@@ -1867,17 +1867,17 @@ cleanup:
     return count;
 }
 
-void notify_friends_status(int user_id, const char *command, const char *nickname) {
+void notify_friends_status(int user_id, const char *command, const char *username) {
     int friend_ids[MAX_CLIENTS];
     int friend_count;
     char message[BUFFER_SIZE];
 
-    if (user_id <= 0 || command == NULL || nickname == NULL) {
+    if (user_id <= 0 || command == NULL || username == NULL) {
         return;
     }
 
     friend_count = get_friend_ids(user_id, friend_ids, MAX_CLIENTS);
-    snprintf(message, sizeof(message), "%s:%d:%s", command, user_id, nickname);
+    snprintf(message, sizeof(message), "%s:%d:%s", command, user_id, username);
     for (int i = 0; i < friend_count; i++) {
         if (!has_block_between(user_id, friend_ids[i])) {
             send_to_user(friend_ids[i], message);
@@ -1906,26 +1906,17 @@ void *handle_client(void *arg) {
         if (HAS_PREFIX(buffer, "REGISTER:")) {
             char payload[BUFFER_SIZE];
             char *first_comma;
-            char *second_comma;
             char *username;
             char *password;
-            char *nickname;
 
             snprintf(payload, sizeof(payload), "%s", PREFIX_PAYLOAD(buffer, "REGISTER:"));
             first_comma = strchr(payload, ',');
             if (first_comma != NULL) {
                 *first_comma = '\0';
-                second_comma = strchr(first_comma + 1, ',');
                 username = payload;
                 password = first_comma + 1;
-                if (second_comma != NULL) {
-                    *second_comma = '\0';
-                    nickname = second_comma + 1;
-                } else {
-                    nickname = "";
-                }
 
-                int user_id = register_user(username, password, nickname);
+                int user_id = register_user(username, password);
                 if (user_id > 0) {
                     snprintf(response, sizeof(response), "REGISTER_SUCCESS:%d", user_id);
                 } else if (user_id == REGISTER_ERROR_DUPLICATE) {
@@ -1941,26 +1932,24 @@ void *handle_client(void *arg) {
             send(client->sockfd, response, strlen(response), 0);
         }
         else if (HAS_PREFIX(buffer, "LOGIN:")) {
-            char username[50], password[50], nickname[50];
+            char username[50], password[50];
             int user_id;
             int login_success = 0;
 
             if (sscanf(PREFIX_PAYLOAD(buffer, "LOGIN:"), "%49[^,],%49[^\n]", username, password) == 2 &&
-                login_user(username, password, nickname, &user_id) == 0) {
+                login_user(username, password, &user_id) == 0) {
                 client->user_id = user_id;
                 strncpy(client->username, username, sizeof(client->username) - 1);
                 client->username[sizeof(client->username) - 1] = '\0';
-                strncpy(client->nickname, nickname, sizeof(client->nickname) - 1);
-                client->nickname[sizeof(client->nickname) - 1] = '\0';
-                update_client_session(client->sockfd, user_id, username, nickname);
-                snprintf(response, sizeof(response), "LOGIN_SUCCESS:%d:%s:%s", user_id, username, nickname);
+                update_client_session(client->sockfd, user_id, username);
+                snprintf(response, sizeof(response), "LOGIN_SUCCESS:%d:%s", user_id, username);
                 login_success = 1;
             } else {
                 snprintf(response, sizeof(response), "LOGIN_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
             if (login_success) {
-                notify_friends_status(client->user_id, "FRIEND_ONLINE", client->nickname);
+                notify_friends_status(client->user_id, "FRIEND_ONLINE", client->username);
             }
         }
         else if (HAS_PREFIX(buffer, "ADDFRIEND:")) {
@@ -2064,7 +2053,7 @@ void *handle_client(void *arg) {
                 format_local_protocol_timestamp(timestamp, sizeof(timestamp));
             }
             snprintf(response, sizeof(response), "NEW_MESSAGE:%d:%s:%s:%s",
-                     sender_id, client->nickname, timestamp, content);
+                     sender_id, client->username, timestamp, content);
             send_to_user(receiver_id, response);
             send(client->sockfd, response, strlen(response), 0);
         }
@@ -2207,7 +2196,7 @@ void *handle_client(void *arg) {
                 format_local_protocol_timestamp(timestamp, sizeof(timestamp));
             }
             snprintf(response, sizeof(response), "NEW_GROUP_MESSAGE:%d:%d:%s:%s:%s",
-                     group_id, sender_id, client->nickname, timestamp, content);
+                     group_id, sender_id, client->username, timestamp, content);
             send_to_group_members(group_id, response);
         }
         else if (HAS_PREFIX(buffer, "BLOCK_USER:")) {
@@ -2284,8 +2273,8 @@ void *handle_client(void *arg) {
     }
 
     int disconnected_user_id = client->user_id;
-    char disconnected_nickname[50];
-    snprintf(disconnected_nickname, sizeof(disconnected_nickname), "%s", client->nickname);
+    char disconnected_username[50];
+    snprintf(disconnected_username, sizeof(disconnected_username), "%s", client->username);
 
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < client_count; i++) {
@@ -2300,7 +2289,7 @@ void *handle_client(void *arg) {
     pthread_mutex_unlock(&clients_mutex);
 
     if (disconnected_user_id > 0 && !is_user_online(disconnected_user_id)) {
-        notify_friends_status(disconnected_user_id, "FRIEND_OFFLINE", disconnected_nickname);
+        notify_friends_status(disconnected_user_id, "FRIEND_OFFLINE", disconnected_username);
     }
 
     close(client->sockfd);
@@ -2378,7 +2367,6 @@ int main(void) {
         client->addr = address;
         client->user_id = -1;
         client->username[0] = '\0';
-        client->nickname[0] = '\0';
 
         pthread_mutex_lock(&clients_mutex);
         clients[client_count++] = *client;

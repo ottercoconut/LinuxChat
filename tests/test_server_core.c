@@ -40,14 +40,13 @@ static void test_online_session_update(void) {
     clients[1].user_id = -1;
     client_count = 2;
 
-    update_client_session(32, 7, "alice", "Alice");
+    update_client_session(32, 7, "alice");
 
     assert(clients[0].user_id == -1);
     assert(clients[1].user_id == 7);
     assert(strcmp(clients[1].username, "alice") == 0);
-    assert(strcmp(clients[1].nickname, "Alice") == 0);
 
-    update_client_session(999, 8, "bob", "Bob");
+    update_client_session(999, 8, "bob");
     assert(clients[1].user_id == 7);
     assert(strcmp(clients[1].username, "alice") == 0);
 }

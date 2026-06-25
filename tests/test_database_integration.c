@@ -100,17 +100,15 @@ static void reset_schema(void) {
 }
 
 static void test_registration_and_friend_constraints(void) {
-    int alice = register_user("alice_test", "pw", "Alice");
-    int bob = register_user("bob_test", "pw", "Bob");
+    int alice = register_user("alice_test", "pw");
+    int bob = register_user("bob_test", "pw");
     char stored_password[128];
-    char nickname[50];
     int login_id = 0;
     int resolved_user_id = 0;
-    int no_nickname;
 
-    assert(alice > 0);
-    assert(bob > 0);
-    assert(register_user("alice_test", "pw2", "Duplicate") == REGISTER_ERROR_DUPLICATE);
+    assert(alice >= 10000000 && alice <= 99999999);
+    assert(bob >= 10000000 && bob <= 99999999);
+    assert(register_user("alice_test", "pw2") == REGISTER_ERROR_DUPLICATE);
     assert(scalar_long("SELECT COUNT(*) FROM users WHERE username='alice_test'") == 1);
 
     scalar_text("SELECT password FROM users WHERE username='alice_test'", stored_password, sizeof(stored_password));
@@ -118,26 +116,18 @@ static void test_registration_and_friend_constraints(void) {
     assert(strlen(stored_password) == 64);
     assert(strspn(stored_password, "0123456789abcdefABCDEF") == 64);
 
-    assert(login_user("alice_test", "pw", nickname, &login_id) == 0);
+    assert(login_user("alice_test", "pw", &login_id) == 0);
     assert(login_id == alice);
-    assert(strcmp(nickname, "Alice") == 0);
-    assert(login_user("alice_test", "wrong", nickname, &login_id) == -1);
-    assert(login_user("alice_test' OR '1'='1", "pw", nickname, &login_id) == -1);
+    assert(login_user("alice_test", "wrong", &login_id) == -1);
+    assert(login_user("alice_test' OR '1'='1", "pw", &login_id) == -1);
 
-    assert(register_user("unsafe,user", "pw", "Unsafe") == REGISTER_ERROR_INVALID_INPUT);
-    assert(register_user("unsafe_colon", "pw:bad", "Unsafe") == REGISTER_ERROR_INVALID_INPUT);
-    assert(register_user("unsafe_semicolon", "pw", "Bad;Name") == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user("unsafe,user", "pw") == REGISTER_ERROR_INVALID_INPUT);
+    assert(register_user("unsafe_colon", "pw:bad") == REGISTER_ERROR_INVALID_INPUT);
 
-    int quoted = register_user("quoted_user' OR '1'='1", "quoted_pw", "Quoted");
+    int quoted = register_user("quoted_user' OR '1'='1", "quoted_pw");
     assert(quoted > 0);
-    assert(login_user("quoted_user' OR '1'='1", "quoted_pw", nickname, &login_id) == 0);
+    assert(login_user("quoted_user' OR '1'='1", "quoted_pw", &login_id) == 0);
     assert(login_id == quoted);
-
-    no_nickname = register_user("no_nick_test", "pw", "");
-    assert(no_nickname > 0);
-    assert(login_user("no_nick_test", "pw", nickname, &login_id) == 0);
-    assert(login_id == no_nickname);
-    assert(strcmp(nickname, "no_nick_test") == 0);
 
     assert(get_user_id_by_username("bob_test", &resolved_user_id) == 0);
     assert(resolved_user_id == bob);
@@ -224,8 +214,8 @@ static void test_messages_timestamp_and_cascade(void) {
     exec_sql(query);
 
     get_messages(alice, bob, messages, sizeof(messages));
-    assert(strstr(messages, "older message:2026-06-23 09-00-01:Alice;") != NULL);
-    assert(strstr(messages, "newer message:2026-06-23 09-01-02:Bob;") != NULL);
+    assert(strstr(messages, "older message:2026-06-23 09-00-01:alice_test;") != NULL);
+    assert(strstr(messages, "newer message:2026-06-23 09-01-02:bob_test;") != NULL);
     assert(strstr(messages, "09:00:01") == NULL);
     assert(strstr(messages, "older message") < strstr(messages, "newer message"));
 
@@ -263,7 +253,7 @@ static void test_group_chat_and_offline_consistency(void) {
     int bob = (int)scalar_long("SELECT id FROM users WHERE username='bob_test'");
     int quoted = (int)scalar_long("SELECT id FROM users WHERE username='quoted_user'' OR ''1''=''1'");
     int message_id = -1;
-    int dana = register_user("dana_test", "pw", "Dana");
+    int dana = register_user("dana_test", "pw");
     int group_id;
     char initial_members[64];
     char group_offline_record[64];
@@ -294,8 +284,8 @@ static void test_group_chat_and_offline_consistency(void) {
     assert(is_group_member(dana, group_id) == 0);
 
     assert(get_group_members(alice, group_id, members, sizeof(members)) == 0);
-    assert(strstr(members, "alice_test:Alice;") != NULL);
-    assert(strstr(members, "bob_test:Bob;") != NULL);
+    assert(strstr(members, "alice_test:alice_test;") != NULL);
+    assert(strstr(members, "bob_test:bob_test;") != NULL);
     assert(get_group_members(dana, group_id, members, sizeof(members)) == -1);
 
     assert(add_group_member(alice, group_id, bob) == 0);
@@ -325,7 +315,7 @@ static void test_group_chat_and_offline_consistency(void) {
     assert(strstr(offline, group_offline_record) != NULL);
     assert(get_group_messages(alice, group_id, messages, sizeof(messages)) == 0);
     assert(strstr(messages, "hello group") != NULL);
-    assert(strstr(messages, "Dana;") != NULL);
+    assert(strstr(messages, "dana_test;") != NULL);
     assert(strstr(messages, "%Y") == NULL);
     assert(strstr(messages, "%d") == NULL);
     offline[0] = '\0';

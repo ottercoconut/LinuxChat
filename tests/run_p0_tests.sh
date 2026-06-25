@@ -115,7 +115,7 @@ assert_contains "$CLIENT_SOURCE" "gdk_threads_add_idle(parse_messages_list, g_st
 assert_contains "$CLIENT_SOURCE" "gdk_threads_add_idle(parse_new_message, g_strdup(buffer))"
 assert_not_contains "$CLIENT_SOURCE" "(GSourceFunc)parse_"
 
-assert_contains "$SERVER_SOURCE" "update_client_session(client->sockfd, user_id, username, nickname)"
+assert_contains "$SERVER_SOURCE" "update_client_session(client->sockfd, user_id, username)"
 assert_contains "$SERVER_SOURCE" "sender_id = client->user_id"
 assert_not_contains "$SERVER_SOURCE" "login_user(client->username, \"\","
 

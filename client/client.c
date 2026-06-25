@@ -18,7 +18,6 @@
 int sockfd = -1;
 int current_user_id = -1;
 char current_username[50];
-char current_nickname[50];
 int selected_friend_id = -1;
 char selected_friend_username[50];
 int selected_group_id = -1;
@@ -115,24 +114,21 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
 
     GtkEntry *username_entry = GTK_ENTRY(g_object_get_data(G_OBJECT(user_data), "username_entry"));
     GtkEntry *password_entry = GTK_ENTRY(g_object_get_data(G_OBJECT(user_data), "password_entry"));
-    GtkEntry *nickname_entry = GTK_ENTRY(g_object_get_data(G_OBJECT(user_data), "nickname_entry"));
 
     const char *username = gtk_entry_get_text(username_entry);
     const char *password = gtk_entry_get_text(password_entry);
-    const char *nickname = gtk_entry_get_text(nickname_entry);
 
     if (strlen(username) == 0 || strlen(password) == 0) {
         gtk_label_set_text(GTK_LABEL(status_label), "请填写用户名和密码");
         return;
     }
-    if (strlen(username) >= 50 || strlen(password) >= 50 || strlen(nickname) >= 50) {
-        gtk_label_set_text(GTK_LABEL(status_label), "用户名、密码和昵称不能超过49字节");
+    if (strlen(username) >= 50 || strlen(password) >= 50) {
+        gtk_label_set_text(GTK_LABEL(status_label), "用户名和密码不能超过49字节");
         return;
     }
     if (!is_client_protocol_safe(username, FALSE) ||
-        !is_client_protocol_safe(password, FALSE) ||
-        (strlen(nickname) > 0 && !is_client_protocol_safe(nickname, FALSE))) {
-        gtk_label_set_text(GTK_LABEL(status_label), "输入不能包含逗号、冒号、分号或换行");
+        !is_client_protocol_safe(password, FALSE)) {
+        gtk_label_set_text(GTK_LABEL(status_label), "用户名和密码不能包含逗号、冒号、分号或换行");
         return;
     }
 
@@ -143,7 +139,7 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
     }
 
     char msg[BUFFER_SIZE];
-    if (snprintf(msg, sizeof(msg), "REGISTER:%s,%s,%s", username, password, nickname) >= (int)sizeof(msg)) {
+    if (snprintf(msg, sizeof(msg), "REGISTER:%s,%s", username, password) >= (int)sizeof(msg)) {
         gtk_label_set_text(GTK_LABEL(status_label), "注册信息过长");
         close(sockfd);
         sockfd = -1;
@@ -159,7 +155,6 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
         gtk_label_set_text(GTK_LABEL(status_label), "注册成功，请登录");
         gtk_entry_set_text(username_entry, "");
         gtk_entry_set_text(password_entry, "");
-        gtk_entry_set_text(nickname_entry, "");
     } else if (strcmp(buffer, "REGISTER_FAILED_DUPLICATE_USERNAME") == 0) {
         gtk_label_set_text(GTK_LABEL(status_label), "注册失败，用户名已存在");
     } else if (strcmp(buffer, "REGISTER_FAILED_INVALID_INPUT") == 0) {
@@ -237,7 +232,7 @@ void on_login_clicked(GtkButton *button, gpointer user_data) {
 
     if (HAS_PREFIX(buffer, "LOGIN_SUCCESS:") &&
         sscanf(PREFIX_PAYLOAD(buffer, "LOGIN_SUCCESS:"),
-               "%d:%49[^:]:%49[^\n]", &current_user_id, current_username, current_nickname) == 3) {
+               "%d:%49[^\n]", &current_user_id, current_username) == 2) {
         gtk_label_set_text(GTK_LABEL(status_label), "登录成功");
 
         if (start_receive_thread() != 0) {
@@ -250,7 +245,7 @@ void on_login_clicked(GtkButton *button, gpointer user_data) {
         gtk_stack_set_visible_child(GTK_STACK(main_stack), chat_window);
 
         char title[100];
-        snprintf(title, sizeof(title), "Linux聊天工具 - %s", current_nickname);
+        snprintf(title, sizeof(title), "Linux聊天工具 - %s", current_username);
         gtk_window_set_title(GTK_WINDOW(window), title);
 
         snprintf(msg, sizeof(msg), "FRIENDS:%d", current_user_id);
@@ -306,10 +301,10 @@ void on_friend_selected(GtkTreeView *tree_view, gpointer user_data) {
 
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
         gint friend_id;
-        gchar *nickname;
+        gchar *display_name;
         gchar *username;
 
-        gtk_tree_model_get(model, &iter, 0, &friend_id, 1, &nickname, 2, &username, -1);
+        gtk_tree_model_get(model, &iter, 0, &friend_id, 1, &display_name, 2, &username, -1);
 
         selected_friend_id = friend_id;
         snprintf(selected_friend_username, sizeof(selected_friend_username), "%s", username);
@@ -317,10 +312,10 @@ void on_friend_selected(GtkTreeView *tree_view, gpointer user_data) {
         selected_is_group = FALSE;
 
         char title[100];
-        snprintf(title, sizeof(title), "与 %s 聊天", nickname);
+        snprintf(title, sizeof(title), "与 %s 聊天", display_name);
         gtk_label_set_text(GTK_LABEL(g_object_get_data(G_OBJECT(user_data), "chat_title")), title);
 
-        g_free(nickname);
+        g_free(display_name);
         g_free(username);
 
         gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view)), "", -1);
@@ -551,14 +546,17 @@ gboolean parse_friends_list(gpointer data) {
     gtk_list_store_clear(store);
 
     const char *ptr = PREFIX_PAYLOAD(buffer, "FRIENDS_LIST:");
-    char friend_id[10], username[50], nickname[50];
+    char friend_id[10], username[50], display_name[80];
 
-    while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", friend_id, username, nickname) == 3) {
+    while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", friend_id, username, display_name) == 3) {
         GtkTreeIter iter;
-        gtk_list_store_append(store, &iter);
-        gtk_list_store_set(store, &iter, 0, atoi(friend_id), 1, nickname, 2, username, -1);
+        char friend_label[120];
 
-        ptr += strlen(friend_id) + strlen(username) + strlen(nickname) + 3;
+        snprintf(friend_label, sizeof(friend_label), "%s (%s)", username, friend_id);
+        gtk_list_store_append(store, &iter);
+        gtk_list_store_set(store, &iter, 0, atoi(friend_id), 1, friend_label, 2, username, -1);
+
+        ptr += strlen(friend_id) + strlen(username) + strlen(display_name) + 3;
     }
 
     g_free(buffer);
@@ -571,14 +569,14 @@ gboolean parse_groups_list(gpointer data) {
     gtk_list_store_clear(store);
 
     const char *ptr = PREFIX_PAYLOAD(buffer, "GROUPS_LIST:");
-    char group_id[10], group_name[80], owner_nickname[50];
+    char group_id[10], group_name[80], owner_username[50];
 
-    while (sscanf(ptr, "%9[^:]:%79[^:]:%49[^;];", group_id, group_name, owner_nickname) == 3) {
+    while (sscanf(ptr, "%9[^:]:%79[^:]:%49[^;];", group_id, group_name, owner_username) == 3) {
         GtkTreeIter iter;
         gtk_list_store_append(store, &iter);
         gtk_list_store_set(store, &iter, 0, atoi(group_id), 1, group_name, -1);
 
-        ptr += strlen(group_id) + strlen(group_name) + strlen(owner_nickname) + 3;
+        ptr += strlen(group_id) + strlen(group_name) + strlen(owner_username) + 3;
     }
 
     g_free(buffer);
@@ -591,14 +589,14 @@ gboolean parse_group_members_list(gpointer data) {
     gtk_list_store_clear(store);
 
     const char *ptr = PREFIX_PAYLOAD(buffer, "GROUP_MEMBERS_LIST:");
-    char member_id[10], username[50], nickname[50];
+    char member_id[10], username[50], display_name[50];
 
-    while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", member_id, username, nickname) == 3) {
+    while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", member_id, username, display_name) == 3) {
         GtkTreeIter iter;
         gtk_list_store_append(store, &iter);
-        gtk_list_store_set(store, &iter, 0, atoi(member_id), 1, nickname, 2, member_id, -1);
+        gtk_list_store_set(store, &iter, 0, atoi(member_id), 1, username, 2, member_id, -1);
 
-        ptr += strlen(member_id) + strlen(username) + strlen(nickname) + 3;
+        ptr += strlen(member_id) + strlen(username) + strlen(display_name) + 3;
     }
 
     g_free(buffer);
@@ -614,15 +612,15 @@ gboolean parse_messages_list(gpointer data) {
     gtk_text_buffer_get_end_iter(text_buffer, &iter);
 
     const char *ptr = PREFIX_PAYLOAD(buffer, "MESSAGES_LIST:");
-    char content[BUFFER_SIZE], timestamp[50], nickname[50];
+    char content[BUFFER_SIZE], timestamp[50], username[50];
 
-    while (sscanf(ptr, "%1023[^:]:%49[^:]:%49[^;];", content, timestamp, nickname) == 3) {
+    while (sscanf(ptr, "%1023[^:]:%49[^:]:%49[^;];", content, timestamp, username) == 3) {
         char msg[BUFFER_SIZE];
-        snprintf(msg, sizeof(msg), "%s [%s]: %s\n", nickname, timestamp, content);
+        snprintf(msg, sizeof(msg), "%s [%s]: %s\n", username, timestamp, content);
 
         gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
 
-        ptr += strlen(content) + strlen(timestamp) + strlen(nickname) + 3;
+        ptr += strlen(content) + strlen(timestamp) + strlen(username) + 3;
     }
 
     gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(message_view),
@@ -641,15 +639,15 @@ gboolean parse_group_messages_list(gpointer data) {
     gtk_text_buffer_get_end_iter(text_buffer, &iter);
 
     const char *ptr = PREFIX_PAYLOAD(buffer, "GROUP_MESSAGES_LIST:");
-    char content[BUFFER_SIZE], timestamp[50], nickname[50];
+    char content[BUFFER_SIZE], timestamp[50], username[50];
 
-    while (sscanf(ptr, "%1023[^:]:%49[^:]:%49[^;];", content, timestamp, nickname) == 3) {
+    while (sscanf(ptr, "%1023[^:]:%49[^:]:%49[^;];", content, timestamp, username) == 3) {
         char msg[BUFFER_SIZE];
-        snprintf(msg, sizeof(msg), "%s [%s]: %s\n", nickname, timestamp, content);
+        snprintf(msg, sizeof(msg), "%s [%s]: %s\n", username, timestamp, content);
 
         gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
 
-        ptr += strlen(content) + strlen(timestamp) + strlen(nickname) + 3;
+        ptr += strlen(content) + strlen(timestamp) + strlen(username) + 3;
     }
 
     gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(message_view),
@@ -662,17 +660,17 @@ gboolean parse_group_messages_list(gpointer data) {
 gboolean parse_new_message(gpointer data) {
     char *buffer = (char *)data;
     int sender_id;
-    char sender_nickname[50], timestamp[50], content[BUFFER_SIZE];
+    char sender_username[50], timestamp[50], content[BUFFER_SIZE];
     int parsed;
 
     timestamp[0] = '\0';
     parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_MESSAGE:"),
                     "%d:%49[^:]:%49[^:]:%1023[^\n]",
-                    &sender_id, sender_nickname, timestamp, content);
+                    &sender_id, sender_username, timestamp, content);
     if (parsed != 4) {
         parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_MESSAGE:"),
                         "%d:%49[^:]:%1023[^\n]",
-                        &sender_id, sender_nickname, content);
+                        &sender_id, sender_username, content);
         if (parsed == 3) {
             format_local_display_timestamp(timestamp, sizeof(timestamp));
         }
@@ -686,7 +684,7 @@ gboolean parse_new_message(gpointer data) {
 
             char msg[BUFFER_SIZE];
 
-            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_nickname, timestamp, content);
+            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_username, timestamp, content);
             gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
 
             gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(message_view),
@@ -701,17 +699,17 @@ gboolean parse_new_message(gpointer data) {
 gboolean parse_new_group_message(gpointer data) {
     char *buffer = (char *)data;
     int group_id, sender_id;
-    char sender_nickname[50], timestamp[50], content[BUFFER_SIZE];
+    char sender_username[50], timestamp[50], content[BUFFER_SIZE];
     int parsed;
 
     timestamp[0] = '\0';
     parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_GROUP_MESSAGE:"),
                     "%d:%d:%49[^:]:%49[^:]:%1023[^\n]",
-                    &group_id, &sender_id, sender_nickname, timestamp, content);
+                    &group_id, &sender_id, sender_username, timestamp, content);
     if (parsed != 5) {
         parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_GROUP_MESSAGE:"),
                         "%d:%d:%49[^:]:%1023[^\n]",
-                        &group_id, &sender_id, sender_nickname, content);
+                        &group_id, &sender_id, sender_username, content);
         if (parsed == 4) {
             format_local_display_timestamp(timestamp, sizeof(timestamp));
         }
@@ -725,7 +723,7 @@ gboolean parse_new_group_message(gpointer data) {
 
             char msg[BUFFER_SIZE];
 
-            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_nickname, timestamp, content);
+            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_username, timestamp, content);
             gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
 
             gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(message_view),
@@ -745,16 +743,16 @@ gboolean parse_new_group_message(gpointer data) {
 gboolean parse_friend_status(gpointer data) {
     char *buffer = (char *)data;
     int user_id;
-    char nickname[50];
+    char username[50];
     char notice[120];
 
     if (HAS_PREFIX(buffer, "FRIEND_ONLINE:") &&
-        sscanf(PREFIX_PAYLOAD(buffer, "FRIEND_ONLINE:"), "%d:%49[^\n]", &user_id, nickname) == 2) {
-        snprintf(notice, sizeof(notice), "%s 已上线", nickname);
+        sscanf(PREFIX_PAYLOAD(buffer, "FRIEND_ONLINE:"), "%d:%49[^\n]", &user_id, username) == 2) {
+        snprintf(notice, sizeof(notice), "%s 已上线", username);
         gtk_label_set_text(GTK_LABEL(status_label), notice);
     } else if (HAS_PREFIX(buffer, "FRIEND_OFFLINE:") &&
-               sscanf(PREFIX_PAYLOAD(buffer, "FRIEND_OFFLINE:"), "%d:%49[^\n]", &user_id, nickname) == 2) {
-        snprintf(notice, sizeof(notice), "%s 已离线", nickname);
+               sscanf(PREFIX_PAYLOAD(buffer, "FRIEND_OFFLINE:"), "%d:%49[^\n]", &user_id, username) == 2) {
+        snprintf(notice, sizeof(notice), "%s 已离线", username);
         gtk_label_set_text(GTK_LABEL(status_label), notice);
     }
 
@@ -903,9 +901,6 @@ void build_login_window(void) {
     GtkWidget *password_entry = gtk_entry_new();
     gtk_entry_set_visibility(GTK_ENTRY(password_entry), FALSE);
 
-    GtkWidget *nickname_label = gtk_label_new("昵称:");
-    GtkWidget *nickname_entry = gtk_entry_new();
-
     status_label = gtk_label_new("");
 
     GtkWidget *register_button = gtk_button_new_with_label("注册");
@@ -915,15 +910,12 @@ void build_login_window(void) {
     gtk_container_add(GTK_CONTAINER(vbox), username_entry);
     gtk_container_add(GTK_CONTAINER(vbox), password_label);
     gtk_container_add(GTK_CONTAINER(vbox), password_entry);
-    gtk_container_add(GTK_CONTAINER(vbox), nickname_label);
-    gtk_container_add(GTK_CONTAINER(vbox), nickname_entry);
     gtk_container_add(GTK_CONTAINER(vbox), status_label);
     gtk_container_add(GTK_CONTAINER(vbox), register_button);
     gtk_container_add(GTK_CONTAINER(vbox), login_button);
 
     g_object_set_data(G_OBJECT(login_window), "username_entry", username_entry);
     g_object_set_data(G_OBJECT(login_window), "password_entry", password_entry);
-    g_object_set_data(G_OBJECT(login_window), "nickname_entry", nickname_entry);
 
     g_signal_connect(register_button, "clicked", G_CALLBACK(on_register_clicked), login_window);
     g_signal_connect(login_button, "clicked", G_CALLBACK(on_login_clicked), login_window);

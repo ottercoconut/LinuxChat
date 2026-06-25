@@ -33,10 +33,10 @@ The database name must contain `test`. The integration test drops and recreates 
 The database suite checks:
 
 - duplicate usernames are rejected
-- blank registration nicknames fall back to the username
+- generated user IDs are 8 digit random numbers
 - stored passwords are SHA-256 hashes instead of plaintext
 - SQL-injection-shaped login input does not bypass authentication
-- username lookup resolves `users.username`, rejects missing or delimiter-unsafe usernames, and does not use nicknames as identifiers
+- username lookup resolves `users.username` and rejects missing or delimiter-unsafe usernames
 - invalid friend foreign keys are rejected
 - reciprocal friend rows are created together
 - adding a friend by username rejects self-adds

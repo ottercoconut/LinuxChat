@@ -249,7 +249,7 @@ COMMAND:param1,param2,param3
 
 | 命令 | 参数 | 说明 |
 | --- | --- | --- |
-| REGISTER | username,password,nickname | 用户注册，nickname 可为空 |
+| REGISTER | username,password | 用户注册 |
 | LOGIN | username,password | 用户登录 |
 | ADDFRIEND_USERNAME | username | 添加好友，客户端默认使用用户名 |
 | ADDFRIEND | user_id,friend_id | 添加好友，旧 ID 协议兼容 |
@@ -270,13 +270,13 @@ COMMAND:param1,param2,param3
 | OFFLINE_MESSAGES | user_id | 获取未读消息摘要 |
 | QUIT | 无 | 断开连接 |
 
-普通用户交互优先使用 `username`，服务端通过预处理语句将 `users.username` 解析为内部 `users.id`。`users.id` 是数据库主键和内部实现细节；`nickname` 只用于展示，不能作为唯一查找依据。注册时 `nickname` 可留空，服务端会自动使用 `username` 作为昵称。为兼容现有客户端，`ADDFRIEND`、`FRIENDS`、`MESSAGES`、`SEND`、`GROUPS`、`SEND_GROUP`、`BLOCK_USER`、`UNBLOCK_USER` 和 `OFFLINE_MESSAGES` 仍可携带 user_id/sender_id 字段；服务端实际执行时只信任登录会话中的用户 ID。用户名、密码、昵称和群名不能包含 `,`、`:`、`;` 或换行，消息内容不能包含 `:`、`;` 或换行。
+普通用户交互优先使用 `username`，服务端通过预处理语句将 `users.username` 解析为 `users.id`。`users.id` 是 8 位随机数字，和用户名一起作为用户身份标识。为兼容现有客户端，`ADDFRIEND`、`FRIENDS`、`MESSAGES`、`SEND`、`GROUPS`、`SEND_GROUP`、`BLOCK_USER`、`UNBLOCK_USER` 和 `OFFLINE_MESSAGES` 仍可携带 user_id/sender_id 字段；服务端实际执行时只信任登录会话中的用户 ID。用户名、密码和群名不能包含 `,`、`:`、`;` 或换行，消息内容不能包含 `:`、`;` 或换行。
 
 ## 数据表
 
 项目主要使用下面几类 MySQL 表：
 
-- `users`：内部数字主键、唯一用户名、SHA-256 密码哈希、昵称和创建时间
+- `users`：8 位数字主键、唯一用户名、SHA-256 密码哈希和创建时间
 - `friends`：用户之间的好友关系
 - `friend_blocks`：用户拉黑关系
 - `messages`：私聊消息内容、发送方、接收方、未读状态和时间戳
@@ -294,7 +294,7 @@ COMMAND:param1,param2,param3
 
 ## 当前状态
 
-当前版本是课程设计/学习用途实现，已覆盖注册登录、好友、私聊、群聊、拉黑、在线状态通知和离线消息提示等主要功能链路。前期已修复登录后聊天链路无法正常工作的关键问题，包括客户端接收线程启动时机、聊天页切换、服务端在线用户状态同步和实时消息昵称获取。随后又补充了聊天稳定性和数据正确性修复，包括历史消息时间戳解析、历史响应缓冲区、socket 失败判断和全局 MySQL 连接并发访问保护。安全加固部分已完成 SQL 预处理语句、密码哈希、协议分隔符校验、客户端有界格式化，以及好友/群聊/消息操作基于登录会话授权。
+当前版本是课程设计/学习用途实现，已覆盖注册登录、好友、私聊、群聊、拉黑、在线状态通知和离线消息提示等主要功能链路。前期已修复登录后聊天链路无法正常工作的关键问题，包括客户端接收线程启动时机、聊天页切换、服务端在线用户状态同步和实时消息用户名获取。随后又补充了聊天稳定性和数据正确性修复，包括历史消息时间戳解析、历史响应缓冲区、socket 失败判断和全局 MySQL 连接并发访问保护。安全加固部分已完成 SQL 预处理语句、密码哈希、协议分隔符校验、客户端有界格式化，以及好友/群聊/消息操作基于登录会话授权。
 
 后续可以继续完善：
 
