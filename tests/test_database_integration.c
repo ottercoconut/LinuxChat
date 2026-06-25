@@ -169,6 +169,8 @@ static void test_registration_and_friend_constraints(void) {
              "SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = %d AND blocked_id = %d",
              bob, alice);
     assert(scalar_long(relation_query) == 1);
+    assert(unblock_user_by_username(alice, "bob_test") == UNBLOCK_USER_BLOCKED_BY_TARGET);
+    assert(scalar_long(relation_query) == 1);
     assert(unblock_user_by_username(bob, "alice_test") == 0);
     assert(unblock_user_by_username(bob, "alice_test") == UNBLOCK_USER_NOT_BLOCKED);
     assert(scalar_long(relation_query) == 0);

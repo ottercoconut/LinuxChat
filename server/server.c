@@ -20,6 +20,7 @@
 #define GROUP_MEMBER_ADD_ALREADY_MEMBER -2
 #define GROUP_MEMBER_ADD_BLOCKED -3
 #define UNBLOCK_USER_NOT_BLOCKED -2
+#define UNBLOCK_USER_BLOCKED_BY_TARGET -3
 #define HAS_PREFIX(text, prefix) (strncmp((text), (prefix), strlen(prefix)) == 0)
 #define PREFIX_PAYLOAD(text, prefix) ((text) + strlen(prefix))
 
@@ -865,6 +866,13 @@ int unblock_user(int blocker_id, int blocked_id) {
 
     direct_block = has_direct_block(blocker_id, blocked_id);
     if (direct_block == 0) {
+        int reverse_block = has_direct_block(blocked_id, blocker_id);
+        if (reverse_block == 1) {
+            return UNBLOCK_USER_BLOCKED_BY_TARGET;
+        }
+        if (reverse_block < 0) {
+            return -1;
+        }
         return UNBLOCK_USER_NOT_BLOCKED;
     }
     if (direct_block < 0) {
@@ -2243,6 +2251,8 @@ void *handle_client(void *arg) {
             }
             if (unblock_status == 0) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
+            } else if (unblock_status == UNBLOCK_USER_BLOCKED_BY_TARGET) {
+                snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED_BLOCKED_BY_TARGET");
             } else if (unblock_status == UNBLOCK_USER_NOT_BLOCKED) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED_NOT_BLOCKED");
             } else {
@@ -2259,6 +2269,8 @@ void *handle_client(void *arg) {
             }
             if (unblock_status == 0) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
+            } else if (unblock_status == UNBLOCK_USER_BLOCKED_BY_TARGET) {
+                snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED_BLOCKED_BY_TARGET");
             } else if (unblock_status == UNBLOCK_USER_NOT_BLOCKED) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_FAILED_NOT_BLOCKED");
             } else {
