@@ -101,6 +101,8 @@ assert_contains "$SERVER_SOURCE" "pthread_mutex_t db_mutex"
 assert_contains "$SERVER_SOURCE" "pthread_mutex_lock(&db_mutex)"
 assert_contains "$SERVER_SOURCE" "DATE_FORMAT(m.timestamp, '%%Y-%%m-%%d %%H-%%i-%%s')"
 assert_contains "$SERVER_SOURCE" "DATE_FORMAT(gm.timestamp, '%Y-%m-%d %H-%i-%s')"
+assert_contains "$SERVER_SOURCE" "NEW_MESSAGE:%d:%s:%s:%s"
+assert_contains "$SERVER_SOURCE" "NEW_GROUP_MESSAGE:%d:%d:%s:%s:%s"
 assert_contains "$SERVER_SOURCE" "volatile sig_atomic_t server_running"
 assert_contains "$SERVER_SOURCE" "while (server_running)"
 assert_contains "$SERVER_SOURCE" "if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)"
@@ -113,5 +115,7 @@ assert_not_contains "$SERVER_SOURCE" "strcpy("
 
 assert_contains "$CLIENT_SOURCE" "%1023[^:]:%49[^:]:%49[^;];"
 assert_contains "$CLIENT_SOURCE" "snprintf(msg, sizeof(msg), \"%s [%s]: %s\\n\", nickname, timestamp, content)"
+assert_contains "$CLIENT_SOURCE" "%Y-%m-%d %H-%M-%S"
+assert_not_contains "$CLIENT_SOURCE" "%H:%M:%S"
 
 printf 'P1 tests passed.\n'

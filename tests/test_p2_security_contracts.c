@@ -37,10 +37,10 @@ int main(void) {
     assert(has_direct_block(0, 2) == -1);
     assert(has_direct_block(1, 1) == -1);
 
-    assert(save_message(0, 2, "valid content") == -1);
-    assert(save_message(1, 2, "bad:content") == -1);
-    assert(save_message(1, 2, "bad;content") == -1);
-    assert(save_message(1, 2, "bad\ncontent") == -1);
+    assert(save_message(0, 2, "valid content", NULL, 0) == -1);
+    assert(save_message(1, 2, "bad:content", NULL, 0) == -1);
+    assert(save_message(1, 2, "bad;content", NULL, 0) == -1);
+    assert(save_message(1, 2, "bad\ncontent", NULL, 0) == -1);
     assert(block_user(0, 2) == -1);
     assert(unblock_user(1, 1) == -1);
     assert(add_friend_by_username(0, "alice") == -1);
@@ -53,8 +53,8 @@ int main(void) {
     assert(create_group(1, "bad;name", "2") == -1);
     assert(add_group_member_by_username(0, 1, "alice") == -1);
     assert(add_group_member_by_username(1, 1, "bad,name") == -1);
-    assert(save_group_message(1, 2, "bad:group", NULL) == -1);
-    assert(save_group_message(1, 2, "bad;group", NULL) == -1);
+    assert(save_group_message(1, 2, "bad:group", NULL, NULL, 0) == -1);
+    assert(save_group_message(1, 2, "bad;group", NULL, NULL, 0) == -1);
 
     puts("P2 security contract tests passed");
     return 0;

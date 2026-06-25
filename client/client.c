@@ -59,6 +59,22 @@ gboolean is_client_protocol_safe(const char *text, gboolean allow_comma) {
     return TRUE;
 }
 
+static void format_local_display_timestamp(char *timestamp, size_t timestamp_size) {
+    time_t now;
+    struct tm *tm_info;
+
+    if (timestamp == NULL || timestamp_size == 0) {
+        return;
+    }
+
+    timestamp[0] = '\0';
+    now = time(NULL);
+    tm_info = localtime(&now);
+    if (tm_info != NULL) {
+        strftime(timestamp, timestamp_size, "%Y-%m-%d %H-%M-%S", tm_info);
+    }
+}
+
 void connect_to_server(void) {
     struct sockaddr_in server_addr;
 
@@ -631,22 +647,31 @@ gboolean parse_group_messages_list(gpointer data) {
 gboolean parse_new_message(gpointer data) {
     char *buffer = (char *)data;
     int sender_id;
-    char sender_nickname[50], content[BUFFER_SIZE];
+    char sender_nickname[50], timestamp[50], content[BUFFER_SIZE];
+    int parsed;
 
-    if (sscanf(PREFIX_PAYLOAD(buffer, "NEW_MESSAGE:"),
-               "%d:%49[^:]:%1023[^\n]", &sender_id, sender_nickname, content) == 3) {
+    timestamp[0] = '\0';
+    parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_MESSAGE:"),
+                    "%d:%49[^:]:%49[^:]:%1023[^\n]",
+                    &sender_id, sender_nickname, timestamp, content);
+    if (parsed != 4) {
+        parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_MESSAGE:"),
+                        "%d:%49[^:]:%1023[^\n]",
+                        &sender_id, sender_nickname, content);
+        if (parsed == 3) {
+            format_local_display_timestamp(timestamp, sizeof(timestamp));
+        }
+    }
+
+    if (parsed == 4 || parsed == 3) {
         if (sender_id == selected_friend_id || sender_id == current_user_id) {
             GtkTextBuffer *text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view));
             GtkTextIter iter;
             gtk_text_buffer_get_end_iter(text_buffer, &iter);
 
             char msg[BUFFER_SIZE];
-            time_t now = time(NULL);
-            struct tm *tm_info = localtime(&now);
-            char time_str[50];
-            strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
 
-            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_nickname, time_str, content);
+            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_nickname, timestamp, content);
             gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
 
             gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(message_view),
@@ -661,22 +686,31 @@ gboolean parse_new_message(gpointer data) {
 gboolean parse_new_group_message(gpointer data) {
     char *buffer = (char *)data;
     int group_id, sender_id;
-    char sender_nickname[50], content[BUFFER_SIZE];
+    char sender_nickname[50], timestamp[50], content[BUFFER_SIZE];
+    int parsed;
 
-    if (sscanf(PREFIX_PAYLOAD(buffer, "NEW_GROUP_MESSAGE:"), "%d:%d:%49[^:]:%1023[^\n]",
-               &group_id, &sender_id, sender_nickname, content) == 4) {
+    timestamp[0] = '\0';
+    parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_GROUP_MESSAGE:"),
+                    "%d:%d:%49[^:]:%49[^:]:%1023[^\n]",
+                    &group_id, &sender_id, sender_nickname, timestamp, content);
+    if (parsed != 5) {
+        parsed = sscanf(PREFIX_PAYLOAD(buffer, "NEW_GROUP_MESSAGE:"),
+                        "%d:%d:%49[^:]:%1023[^\n]",
+                        &group_id, &sender_id, sender_nickname, content);
+        if (parsed == 4) {
+            format_local_display_timestamp(timestamp, sizeof(timestamp));
+        }
+    }
+
+    if (parsed == 5 || parsed == 4) {
         if (selected_is_group && group_id == selected_group_id) {
             GtkTextBuffer *text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view));
             GtkTextIter iter;
             gtk_text_buffer_get_end_iter(text_buffer, &iter);
 
             char msg[BUFFER_SIZE];
-            time_t now = time(NULL);
-            struct tm *tm_info = localtime(&now);
-            char time_str[50];
-            strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
 
-            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_nickname, time_str, content);
+            snprintf(msg, sizeof(msg), "%s [%s]: %s\n", sender_nickname, timestamp, content);
             gtk_text_buffer_insert(text_buffer, &iter, msg, -1);
 
             gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(message_view),

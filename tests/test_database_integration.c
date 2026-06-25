@@ -150,76 +150,118 @@ static void test_registration_and_friend_constraints(void) {
     assert(scalar_long("SELECT COUNT(*) FROM friends") == 0);
 
     assert(add_friend(alice, bob) == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
-                       "(user_id = 1 AND friend_id = 2) OR (user_id = 2 AND friend_id = 1)") == 2);
+    char relation_query[256];
+    snprintf(relation_query, sizeof(relation_query),
+             "SELECT COUNT(*) FROM friends WHERE "
+             "(user_id = %d AND friend_id = %d) OR (user_id = %d AND friend_id = %d)",
+             alice, bob, bob, alice);
+    assert(scalar_long(relation_query) == 2);
     assert(are_friends(alice, bob) == 1);
     assert(are_friends(alice, quoted) == 0);
     assert(are_friends(alice, alice) == 0);
 
     assert(add_friend(alice, bob) == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
-                       "(user_id = 1 AND friend_id = 2) OR (user_id = 2 AND friend_id = 1)") == 2);
+    assert(scalar_long(relation_query) == 2);
     assert(add_friend_by_username(alice, "quoted_user' OR '1'='1") == 0);
     assert(are_friends(alice, quoted) == 1);
     assert(add_friend_by_username(alice, "quoted_user' OR '1'='1") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM friends WHERE "
-                       "(user_id = 1 AND friend_id = 3) OR (user_id = 3 AND friend_id = 1)") == 2);
+    snprintf(relation_query, sizeof(relation_query),
+             "SELECT COUNT(*) FROM friends WHERE "
+             "(user_id = %d AND friend_id = %d) OR (user_id = %d AND friend_id = %d)",
+             alice, quoted, quoted, alice);
+    assert(scalar_long(relation_query) == 2);
 
     assert(block_user_by_username(bob, "alice_test") == 0);
     assert(has_block_between(alice, bob) == 1);
     assert(can_send_private_message(alice, bob) == 0);
     assert(block_user_by_username(bob, "alice_test") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = 2 AND blocked_id = 1") == 1);
+    snprintf(relation_query, sizeof(relation_query),
+             "SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = %d AND blocked_id = %d",
+             bob, alice);
+    assert(scalar_long(relation_query) == 1);
     assert(unblock_user_by_username(bob, "alice_test") == 0);
     assert(unblock_user_by_username(bob, "alice_test") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM friend_blocks WHERE blocker_id = 2 AND blocked_id = 1") == 0);
+    assert(scalar_long(relation_query) == 0);
     assert(has_block_between(alice, bob) == 0);
     assert(can_send_private_message(alice, bob) == 1);
 }
 
 static void test_transaction_rollback_for_half_friendship(void) {
-    exec_sql("DELETE FROM friends");
-    exec_sql("INSERT INTO friends (user_id, friend_id, status) VALUES (2, 1, 1)");
+    int alice = (int)scalar_long("SELECT id FROM users WHERE username='alice_test'");
+    int bob = (int)scalar_long("SELECT id FROM users WHERE username='bob_test'");
+    char query[256];
 
-    assert(add_friend(1, 2) == -1);
-    assert(scalar_long("SELECT COUNT(*) FROM friends WHERE user_id = 1 AND friend_id = 2") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM friends WHERE user_id = 2 AND friend_id = 1") == 1);
+    exec_sql("DELETE FROM friends");
+    snprintf(query, sizeof(query),
+             "INSERT INTO friends (user_id, friend_id, status) VALUES (%d, %d, 1)",
+             bob, alice);
+    exec_sql(query);
+
+    assert(add_friend(alice, bob) == -1);
+    snprintf(query, sizeof(query),
+             "SELECT COUNT(*) FROM friends WHERE user_id = %d AND friend_id = %d",
+             alice, bob);
+    assert(scalar_long(query) == 0);
+    snprintf(query, sizeof(query),
+             "SELECT COUNT(*) FROM friends WHERE user_id = %d AND friend_id = %d",
+             bob, alice);
+    assert(scalar_long(query) == 1);
 }
 
 static void test_messages_timestamp_and_cascade(void) {
+    int alice = (int)scalar_long("SELECT id FROM users WHERE username='alice_test'");
+    int bob = (int)scalar_long("SELECT id FROM users WHERE username='bob_test'");
     char messages[BUFFER_SIZE] = "";
+    char realtime_timestamp[50] = "";
+    char query[512];
 
     exec_sql("DELETE FROM messages");
-    exec_sql("INSERT INTO messages (sender_id, receiver_id, content, timestamp) VALUES "
-             "(1, 2, 'older message', '2026-06-23 09:00:01'),"
-             "(2, 1, 'newer message', '2026-06-23 09:01:02')");
+    snprintf(query, sizeof(query),
+             "INSERT INTO messages (sender_id, receiver_id, content, timestamp) VALUES "
+             "(%d, %d, 'older message', '2026-06-23 09:00:01'),"
+             "(%d, %d, 'newer message', '2026-06-23 09:01:02')",
+             alice, bob, bob, alice);
+    exec_sql(query);
 
-    get_messages(1, 2, messages, sizeof(messages));
+    get_messages(alice, bob, messages, sizeof(messages));
     assert(strstr(messages, "older message:2026-06-23 09-00-01:Alice;") != NULL);
     assert(strstr(messages, "newer message:2026-06-23 09-01-02:Bob;") != NULL);
     assert(strstr(messages, "09:00:01") == NULL);
     assert(strstr(messages, "older message") < strstr(messages, "newer message"));
 
     long before = scalar_long("SELECT COUNT(*) FROM messages");
-    assert(save_message(1, 2, "prepared quote ' and comma, ok") == 0);
+    assert(save_message(alice, bob, "prepared quote ' and comma, ok",
+                        realtime_timestamp, sizeof(realtime_timestamp)) == 0);
     assert(scalar_long("SELECT COUNT(*) FROM messages") == before + 1);
+    assert(strlen(realtime_timestamp) == strlen("2026-06-23 09-00-01"));
+    assert(strchr(realtime_timestamp, ':') == NULL);
 
     before = scalar_long("SELECT COUNT(*) FROM messages");
-    assert(save_message(1, 2, "invalid:delimiter") == -1);
+    assert(save_message(alice, bob, "invalid:delimiter", NULL, 0) == -1);
     assert(scalar_long("SELECT COUNT(*) FROM messages") == before);
 
-    assert(save_message(999999, 2, "invalid sender should not persist") == -1);
+    assert(save_message(999999, bob, "invalid sender should not persist", NULL, 0) == -1);
     assert(scalar_long("SELECT COUNT(*) FROM messages") == before);
 
-    exec_sql("DELETE FROM users WHERE id = 1");
-    assert(scalar_long("SELECT COUNT(*) FROM messages WHERE sender_id = 1 OR receiver_id = 1") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM friends WHERE user_id = 1 OR friend_id = 1") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM chat_groups WHERE owner_id = 1") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM group_messages WHERE group_id = 1") == 0);
+    snprintf(query, sizeof(query), "DELETE FROM users WHERE id = %d", alice);
+    exec_sql(query);
+    snprintf(query, sizeof(query),
+             "SELECT COUNT(*) FROM messages WHERE sender_id = %d OR receiver_id = %d",
+             alice, alice);
+    assert(scalar_long(query) == 0);
+    snprintf(query, sizeof(query),
+             "SELECT COUNT(*) FROM friends WHERE user_id = %d OR friend_id = %d",
+             alice, alice);
+    assert(scalar_long(query) == 0);
+    snprintf(query, sizeof(query), "SELECT COUNT(*) FROM chat_groups WHERE owner_id = %d", alice);
+    assert(scalar_long(query) == 0);
     assert(scalar_long("SELECT COUNT(*) FROM group_message_deliveries") == 0);
 }
 
 static void test_group_chat_and_offline_consistency(void) {
+    int alice = (int)scalar_long("SELECT id FROM users WHERE username='alice_test'");
+    int bob = (int)scalar_long("SELECT id FROM users WHERE username='bob_test'");
+    int quoted = (int)scalar_long("SELECT id FROM users WHERE username='quoted_user'' OR ''1''=''1'");
     int message_id = -1;
     int dana = register_user("dana_test", "pw", "Dana");
     int group_id;
@@ -229,66 +271,75 @@ static void test_group_chat_and_offline_consistency(void) {
     char members[BUFFER_SIZE] = "";
     char messages[BUFFER_SIZE] = "";
     char offline[BUFFER_SIZE] = "";
+    char realtime_timestamp[50] = "";
+    char query[256];
+    char private_offline_record[64];
 
     assert(dana > 0);
 
-    snprintf(initial_members, sizeof(initial_members), "2,2,%ld",
-             scalar_long("SELECT id FROM users WHERE username='quoted_user'' OR ''1''=''1'"));
-    group_id = create_group(1, "Study Group", initial_members);
+    snprintf(initial_members, sizeof(initial_members), "%d,%d,%d", bob, bob, quoted);
+    group_id = create_group(alice, "Study Group", initial_members);
     assert(group_id > 0);
-    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 3);
-    assert(create_group(1, "Unsafe:Group", "2") == -1);
-    assert(create_group(1, "Bad Members", "2,bad") == -1);
-    assert(create_group(1, "Missing Member", "999999") == -1);
+    snprintf(query, sizeof(query), "SELECT COUNT(*) FROM group_members WHERE group_id = %d", group_id);
+    assert(scalar_long(query) == 3);
+    assert(create_group(alice, "Unsafe:Group", "2") == -1);
+    assert(create_group(alice, "Bad Members", "2,bad") == -1);
+    assert(create_group(alice, "Missing Member", "999999") == -1);
     assert(scalar_long("SELECT COUNT(*) FROM chat_groups WHERE name = 'Bad Members'") == 0);
     assert(scalar_long("SELECT COUNT(*) FROM chat_groups WHERE name = 'Missing Member'") == 0);
 
-    get_groups(1, groups, sizeof(groups));
+    get_groups(alice, groups, sizeof(groups));
     assert(strstr(groups, "Study Group") != NULL);
-    assert(is_group_member(1, group_id) == 1);
+    assert(is_group_member(alice, group_id) == 1);
     assert(is_group_member(dana, group_id) == 0);
 
-    assert(get_group_members(1, group_id, members, sizeof(members)) == 0);
+    assert(get_group_members(alice, group_id, members, sizeof(members)) == 0);
     assert(strstr(members, "alice_test:Alice;") != NULL);
     assert(strstr(members, "bob_test:Bob;") != NULL);
     assert(get_group_members(dana, group_id, members, sizeof(members)) == -1);
 
-    assert(add_group_member(1, group_id, 2) == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 3);
-    assert(add_group_member(dana, group_id, 1) == -1);
+    assert(add_group_member(alice, group_id, bob) == 0);
+    assert(scalar_long(query) == 3);
+    assert(add_group_member(dana, group_id, alice) == -1);
     assert(add_group_member_by_username(dana, group_id, "alice_test") == -1);
-    assert(add_group_member_by_username(1, group_id, "missing_user") == -1);
-    assert(add_group_member_by_username(1, group_id, "dana_test") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 4);
-    assert(add_group_member_by_username(1, group_id, "dana_test") == 0);
-    assert(scalar_long("SELECT COUNT(*) FROM group_members WHERE group_id = 1") == 4);
+    assert(add_group_member_by_username(alice, group_id, "missing_user") == -1);
+    assert(add_group_member_by_username(alice, group_id, "dana_test") == 0);
+    assert(scalar_long(query) == 4);
+    assert(add_group_member_by_username(alice, group_id, "dana_test") == 0);
+    assert(scalar_long(query) == 4);
 
-    assert(save_group_message(dana, group_id, "hello group", &message_id) == 0);
+    assert(save_group_message(dana, group_id, "hello group", &message_id,
+                              realtime_timestamp, sizeof(realtime_timestamp)) == 0);
     assert(message_id > 0);
-    assert(scalar_long("SELECT COUNT(*) FROM group_messages WHERE group_id = 1") == 1);
-    assert(scalar_long("SELECT COUNT(*) FROM group_message_deliveries WHERE message_id = 1") == 4);
-    assert(save_group_message(999999, group_id, "not a member", NULL) == -1);
-    assert(save_group_message(dana, group_id, "bad:delimiter", NULL) == -1);
+    assert(strlen(realtime_timestamp) == strlen("2026-06-23 09-00-01"));
+    assert(strchr(realtime_timestamp, ':') == NULL);
+    snprintf(query, sizeof(query), "SELECT COUNT(*) FROM group_messages WHERE group_id = %d", group_id);
+    assert(scalar_long(query) == 1);
+    snprintf(query, sizeof(query), "SELECT COUNT(*) FROM group_message_deliveries WHERE message_id = %d", message_id);
+    assert(scalar_long(query) == 4);
+    assert(save_group_message(999999, group_id, "not a member", NULL, NULL, 0) == -1);
+    assert(save_group_message(dana, group_id, "bad:delimiter", NULL, NULL, 0) == -1);
 
-    get_offline_messages(1, offline, sizeof(offline));
+    get_offline_messages(alice, offline, sizeof(offline));
     snprintf(group_offline_record, sizeof(group_offline_record), "GROUP:%d:1;", group_id);
     assert(strstr(offline, group_offline_record) != NULL);
-    assert(get_group_messages(1, group_id, messages, sizeof(messages)) == 0);
+    assert(get_group_messages(alice, group_id, messages, sizeof(messages)) == 0);
     assert(strstr(messages, "hello group") != NULL);
     assert(strstr(messages, "Dana;") != NULL);
     assert(strstr(messages, "%Y") == NULL);
     assert(strstr(messages, "%d") == NULL);
     offline[0] = '\0';
-    get_offline_messages(1, offline, sizeof(offline));
+    get_offline_messages(alice, offline, sizeof(offline));
     assert(strstr(offline, group_offline_record) == NULL);
 
-    assert(save_message(1, 2, "offline private") == 0);
-    get_offline_messages(2, offline, sizeof(offline));
-    assert(strstr(offline, "PRIVATE:1:1;") != NULL);
-    get_messages(2, 1, messages, sizeof(messages));
+    assert(save_message(alice, bob, "offline private", NULL, 0) == 0);
+    get_offline_messages(bob, offline, sizeof(offline));
+    snprintf(private_offline_record, sizeof(private_offline_record), "PRIVATE:%d:1;", alice);
+    assert(strstr(offline, private_offline_record) != NULL);
+    get_messages(bob, alice, messages, sizeof(messages));
     offline[0] = '\0';
-    get_offline_messages(2, offline, sizeof(offline));
-    assert(strstr(offline, "PRIVATE:1:1;") == NULL);
+    get_offline_messages(bob, offline, sizeof(offline));
+    assert(strstr(offline, private_offline_record) == NULL);
 
 }
 
