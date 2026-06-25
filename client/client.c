@@ -74,6 +74,15 @@ static void format_local_display_timestamp(char *timestamp, size_t timestamp_siz
     }
 }
 
+void clear_tree_view_selection(GtkWidget *tree_view) {
+    if (tree_view == NULL) {
+        return;
+    }
+
+    GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(tree_view));
+    gtk_tree_selection_unselect_all(selection);
+}
+
 void connect_to_server(void) {
     struct sockaddr_in server_addr;
 
@@ -310,6 +319,7 @@ void on_friend_selected(GtkTreeView *tree_view, gpointer user_data) {
         snprintf(selected_friend_username, sizeof(selected_friend_username), "%s", username);
         selected_group_id = -1;
         selected_is_group = FALSE;
+        clear_tree_view_selection(groups_list);
 
         char title[100];
         snprintf(title, sizeof(title), "与 %s 聊天", display_name);
@@ -341,6 +351,7 @@ void on_group_selected(GtkTreeView *tree_view, gpointer user_data) {
         selected_friend_id = -1;
         selected_friend_username[0] = '\0';
         selected_is_group = TRUE;
+        clear_tree_view_selection(friends_list);
 
         char title[120];
         snprintf(title, sizeof(title), "群聊：%s", group_name);
@@ -819,6 +830,24 @@ gboolean show_status_message(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+gboolean show_message_dialog(gpointer data) {
+    char *message = (char *)data;
+
+    gtk_label_set_text(GTK_LABEL(status_label), message);
+
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                               GTK_DIALOG_MODAL,
+                                               GTK_MESSAGE_WARNING,
+                                               GTK_BUTTONS_OK,
+                                               "%s",
+                                               message);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    g_free(message);
+    return G_SOURCE_REMOVE;
+}
+
 void *receive_messages(void *arg) {
     (void)arg;
     char buffer[BUFFER_SIZE];
@@ -858,6 +887,10 @@ void *receive_messages(void *arg) {
             gdk_threads_add_idle(parse_new_message, g_strdup(buffer));
         } else if (HAS_PREFIX(buffer, "NEW_GROUP_MESSAGE:")) {
             gdk_threads_add_idle(parse_new_group_message, g_strdup(buffer));
+        } else if (HAS_PREFIX(buffer, "SEND_FAILED_BLOCKED")) {
+            gdk_threads_add_idle(show_message_dialog, g_strdup("你与该好友存在拉黑关系，无法发送消息"));
+        } else if (HAS_PREFIX(buffer, "SEND_FAILED")) {
+            gdk_threads_add_idle(show_status_message, g_strdup("消息发送失败"));
         } else if (HAS_PREFIX(buffer, "ADDFRIEND_SUCCESS")) {
             gdk_threads_add_idle(refresh_friends_after_add, NULL);
         } else if (HAS_PREFIX(buffer, "ADDFRIEND_FAILED")) {
