@@ -16,6 +16,8 @@
 #define REGISTER_ERROR_SERVER -1
 #define REGISTER_ERROR_DUPLICATE -2
 #define REGISTER_ERROR_INVALID_INPUT -3
+#define HAS_PREFIX(text, prefix) (strncmp((text), (prefix), strlen(prefix)) == 0)
+#define PREFIX_PAYLOAD(text, prefix) ((text) + strlen(prefix))
 
 MYSQL *db_conn;
 pthread_mutex_t db_mutex;
@@ -1787,7 +1789,7 @@ void *handle_client(void *arg) {
 
         printf("收到消息: %s\n", buffer);
 
-        if (strncmp(buffer, "REGISTER:", 9) == 0) {
+        if (HAS_PREFIX(buffer, "REGISTER:")) {
             char payload[BUFFER_SIZE];
             char *first_comma;
             char *second_comma;
@@ -1795,7 +1797,7 @@ void *handle_client(void *arg) {
             char *password;
             char *nickname;
 
-            snprintf(payload, sizeof(payload), "%s", buffer + 9);
+            snprintf(payload, sizeof(payload), "%s", PREFIX_PAYLOAD(buffer, "REGISTER:"));
             first_comma = strchr(payload, ',');
             if (first_comma != NULL) {
                 *first_comma = '\0';
@@ -1824,12 +1826,12 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "LOGIN:", 6) == 0) {
+        else if (HAS_PREFIX(buffer, "LOGIN:")) {
             char username[50], password[50], nickname[50];
             int user_id;
             int login_success = 0;
 
-            if (sscanf(buffer + 6, "%49[^,],%49[^\n]", username, password) == 2 &&
+            if (sscanf(PREFIX_PAYLOAD(buffer, "LOGIN:"), "%49[^,],%49[^\n]", username, password) == 2 &&
                 login_user(username, password, nickname, &user_id) == 0) {
                 client->user_id = user_id;
                 strncpy(client->username, username, sizeof(client->username) - 1);
@@ -1847,10 +1849,10 @@ void *handle_client(void *arg) {
                 notify_friends_status(client->user_id, "FRIEND_ONLINE", client->nickname);
             }
         }
-        else if (strncmp(buffer, "ADDFRIEND:", 10) == 0) {
+        else if (HAS_PREFIX(buffer, "ADDFRIEND:")) {
             int requested_user_id, friend_id;
             if (client->user_id > 0 &&
-                sscanf(buffer + 10, "%d,%d", &requested_user_id, &friend_id) == 2 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "ADDFRIEND:"), "%d,%d", &requested_user_id, &friend_id) == 2 &&
                 add_friend(client->user_id, friend_id) == 0) {
                 if (requested_user_id != client->user_id) {
                     printf("忽略客户端声明的好友操作用户ID: %d，使用登录会话ID: %d\n",
@@ -1861,21 +1863,30 @@ void *handle_client(void *arg) {
                 snprintf(response, sizeof(response), "ADDFRIEND_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
+            if (strcmp(response, "ADDFRIEND_SUCCESS") == 0 && friend_id != client->user_id) {
+                send_to_user(friend_id, "ADDFRIEND_SUCCESS");
+            }
         }
-        else if (strncmp(buffer, "ADDFRIEND_USERNAME:", 19) == 0) {
+        else if (HAS_PREFIX(buffer, "ADDFRIEND_USERNAME:")) {
             char friend_username[50];
+            int friend_id = -1;
             if (client->user_id > 0 &&
-                sscanf(buffer + 19, "%49[^\n]", friend_username) == 1 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "ADDFRIEND_USERNAME:"), "%49[^\n]", friend_username) == 1 &&
+                get_user_id_by_username(friend_username, &friend_id) == 0 &&
                 add_friend_by_username(client->user_id, friend_username) == 0) {
                 snprintf(response, sizeof(response), "ADDFRIEND_SUCCESS");
             } else {
                 snprintf(response, sizeof(response), "ADDFRIEND_FAILED");
             }
             send(client->sockfd, response, strlen(response), 0);
+            if (strcmp(response, "ADDFRIEND_SUCCESS") == 0 && friend_id != client->user_id) {
+                send_to_user(friend_id, "ADDFRIEND_SUCCESS");
+            }
         }
-        else if (strncmp(buffer, "FRIENDS:", 8) == 0) {
+        else if (HAS_PREFIX(buffer, "FRIENDS:")) {
             int requested_user_id;
-            if (client->user_id > 0 && sscanf(buffer + 8, "%d", &requested_user_id) == 1) {
+            if (client->user_id > 0 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "FRIENDS:"), "%d", &requested_user_id) == 1) {
                 char friends[BUFFER_SIZE];
                 if (requested_user_id != client->user_id) {
                     printf("忽略客户端声明的好友列表用户ID: %d，使用登录会话ID: %d\n",
@@ -1888,10 +1899,10 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "MESSAGES:", 9) == 0) {
+        else if (HAS_PREFIX(buffer, "MESSAGES:")) {
             int requested_user_id, friend_id;
             if (client->user_id > 0 &&
-                sscanf(buffer + 9, "%d,%d", &requested_user_id, &friend_id) == 2 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "MESSAGES:"), "%d,%d", &requested_user_id, &friend_id) == 2 &&
                 are_friends(client->user_id, friend_id)) {
                 char messages[BUFFER_SIZE];
                 if (requested_user_id != client->user_id) {
@@ -1905,7 +1916,7 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "SEND:", 5) == 0) {
+        else if (HAS_PREFIX(buffer, "SEND:")) {
             int sender_id, requested_sender_id, receiver_id;
             char content[BUFFER_SIZE];
 
@@ -1915,7 +1926,8 @@ void *handle_client(void *arg) {
                 continue;
             }
 
-            if (sscanf(buffer + 5, "%d,%d,%1023[^\n]", &requested_sender_id, &receiver_id, content) != 3) {
+            if (sscanf(PREFIX_PAYLOAD(buffer, "SEND:"),
+                       "%d,%d,%1023[^\n]", &requested_sender_id, &receiver_id, content) != 3) {
                 snprintf(response, sizeof(response), "SEND_FAILED");
                 send(client->sockfd, response, strlen(response), 0);
                 continue;
@@ -1937,7 +1949,7 @@ void *handle_client(void *arg) {
             send_to_user(receiver_id, response);
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "CREATE_GROUP:", 13) == 0) {
+        else if (HAS_PREFIX(buffer, "CREATE_GROUP:")) {
             char payload[BUFFER_SIZE];
             char group_name[80];
             char member_csv[BUFFER_SIZE] = "";
@@ -1950,7 +1962,7 @@ void *handle_client(void *arg) {
                 continue;
             }
 
-            snprintf(payload, sizeof(payload), "%s", buffer + 13);
+            snprintf(payload, sizeof(payload), "%s", PREFIX_PAYLOAD(buffer, "CREATE_GROUP:"));
             comma = strchr(payload, ',');
             if (comma != NULL) {
                 *comma = '\0';
@@ -1966,9 +1978,10 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "GROUPS:", 7) == 0) {
+        else if (HAS_PREFIX(buffer, "GROUPS:")) {
             int requested_user_id;
-            if (client->user_id > 0 && sscanf(buffer + 7, "%d", &requested_user_id) == 1) {
+            if (client->user_id > 0 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "GROUPS:"), "%d", &requested_user_id) == 1) {
                 char groups[BUFFER_SIZE];
                 if (requested_user_id != client->user_id) {
                     printf("忽略客户端声明的群列表用户ID: %d，使用登录会话ID: %d\n",
@@ -1981,11 +1994,11 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "GROUP_MEMBERS:", 14) == 0) {
+        else if (HAS_PREFIX(buffer, "GROUP_MEMBERS:")) {
             int group_id;
             char members[BUFFER_SIZE];
             if (client->user_id > 0 &&
-                sscanf(buffer + 14, "%d", &group_id) == 1 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "GROUP_MEMBERS:"), "%d", &group_id) == 1 &&
                 get_group_members(client->user_id, group_id, members, sizeof(members)) == 0) {
                 snprintf(response, sizeof(response), "GROUP_MEMBERS_LIST:%s", members);
             } else {
@@ -1993,10 +2006,10 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "ADD_GROUP_MEMBER:", 17) == 0) {
+        else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER:")) {
             int group_id, new_member_id;
             if (client->user_id > 0 &&
-                sscanf(buffer + 17, "%d,%d", &group_id, &new_member_id) == 2 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "ADD_GROUP_MEMBER:"), "%d,%d", &group_id, &new_member_id) == 2 &&
                 add_group_member(client->user_id, group_id, new_member_id) == 0) {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
             } else {
@@ -2004,11 +2017,12 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "ADD_GROUP_MEMBER_USERNAME:", 26) == 0) {
+        else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_USERNAME:")) {
             int group_id;
             char new_member_username[50];
             if (client->user_id > 0 &&
-                sscanf(buffer + 26, "%d,%49[^\n]", &group_id, new_member_username) == 2 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "ADD_GROUP_MEMBER_USERNAME:"),
+                       "%d,%49[^\n]", &group_id, new_member_username) == 2 &&
                 add_group_member_by_username(client->user_id, group_id, new_member_username) == 0) {
                 snprintf(response, sizeof(response), "ADD_GROUP_MEMBER_SUCCESS");
             } else {
@@ -2016,11 +2030,11 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "GROUP_MESSAGES:", 15) == 0) {
+        else if (HAS_PREFIX(buffer, "GROUP_MESSAGES:")) {
             int group_id;
             char messages[BUFFER_SIZE];
             if (client->user_id > 0 &&
-                sscanf(buffer + 15, "%d", &group_id) == 1 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "GROUP_MESSAGES:"), "%d", &group_id) == 1 &&
                 get_group_messages(client->user_id, group_id, messages,
                                    sizeof(messages) - strlen("GROUP_MESSAGES_LIST:")) == 0) {
                 snprintf(response, sizeof(response), "GROUP_MESSAGES_LIST:%s", messages);
@@ -2029,12 +2043,13 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "SEND_GROUP:", 11) == 0) {
+        else if (HAS_PREFIX(buffer, "SEND_GROUP:")) {
             int requested_sender_id, sender_id, group_id, message_id;
             char content[BUFFER_SIZE];
 
             if (client->user_id <= 0 ||
-                sscanf(buffer + 11, "%d,%d,%1023[^\n]", &requested_sender_id, &group_id, content) != 3) {
+                sscanf(PREFIX_PAYLOAD(buffer, "SEND_GROUP:"),
+                       "%d,%d,%1023[^\n]", &requested_sender_id, &group_id, content) != 3) {
                 snprintf(response, sizeof(response), "SEND_GROUP_FAILED");
                 send(client->sockfd, response, strlen(response), 0);
                 continue;
@@ -2056,10 +2071,10 @@ void *handle_client(void *arg) {
                      group_id, sender_id, client->nickname, content);
             send_to_group_members(group_id, response);
         }
-        else if (strncmp(buffer, "BLOCK_USER:", 11) == 0) {
+        else if (HAS_PREFIX(buffer, "BLOCK_USER:")) {
             int requested_user_id, blocked_id;
             if (client->user_id > 0 &&
-                sscanf(buffer + 11, "%d,%d", &requested_user_id, &blocked_id) == 2 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "BLOCK_USER:"), "%d,%d", &requested_user_id, &blocked_id) == 2 &&
                 block_user(client->user_id, blocked_id) == 0) {
                 if (requested_user_id != client->user_id) {
                     printf("忽略客户端声明的屏蔽操作用户ID: %d，使用登录会话ID: %d\n",
@@ -2071,10 +2086,10 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "BLOCK_USER_USERNAME:", 20) == 0) {
+        else if (HAS_PREFIX(buffer, "BLOCK_USER_USERNAME:")) {
             char blocked_username[50];
             if (client->user_id > 0 &&
-                sscanf(buffer + 20, "%49[^\n]", blocked_username) == 1 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "BLOCK_USER_USERNAME:"), "%49[^\n]", blocked_username) == 1 &&
                 block_user_by_username(client->user_id, blocked_username) == 0) {
                 snprintf(response, sizeof(response), "BLOCK_USER_SUCCESS");
             } else {
@@ -2082,10 +2097,10 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "UNBLOCK_USER:", 13) == 0) {
+        else if (HAS_PREFIX(buffer, "UNBLOCK_USER:")) {
             int requested_user_id, blocked_id;
             if (client->user_id > 0 &&
-                sscanf(buffer + 13, "%d,%d", &requested_user_id, &blocked_id) == 2 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "UNBLOCK_USER:"), "%d,%d", &requested_user_id, &blocked_id) == 2 &&
                 unblock_user(client->user_id, blocked_id) == 0) {
                 if (requested_user_id != client->user_id) {
                     printf("忽略客户端声明的解除屏蔽用户ID: %d，使用登录会话ID: %d\n",
@@ -2097,10 +2112,10 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "UNBLOCK_USER_USERNAME:", 22) == 0) {
+        else if (HAS_PREFIX(buffer, "UNBLOCK_USER_USERNAME:")) {
             char blocked_username[50];
             if (client->user_id > 0 &&
-                sscanf(buffer + 22, "%49[^\n]", blocked_username) == 1 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "UNBLOCK_USER_USERNAME:"), "%49[^\n]", blocked_username) == 1 &&
                 unblock_user_by_username(client->user_id, blocked_username) == 0) {
                 snprintf(response, sizeof(response), "UNBLOCK_USER_SUCCESS");
             } else {
@@ -2108,9 +2123,10 @@ void *handle_client(void *arg) {
             }
             send(client->sockfd, response, strlen(response), 0);
         }
-        else if (strncmp(buffer, "OFFLINE_MESSAGES:", 17) == 0) {
+        else if (HAS_PREFIX(buffer, "OFFLINE_MESSAGES:")) {
             int requested_user_id;
-            if (client->user_id > 0 && sscanf(buffer + 17, "%d", &requested_user_id) == 1) {
+            if (client->user_id > 0 &&
+                sscanf(PREFIX_PAYLOAD(buffer, "OFFLINE_MESSAGES:"), "%d", &requested_user_id) == 1) {
                 char offline[BUFFER_SIZE];
                 if (requested_user_id != client->user_id) {
                     printf("忽略客户端声明的离线消息用户ID: %d，使用登录会话ID: %d\n",

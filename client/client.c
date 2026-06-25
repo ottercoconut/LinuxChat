@@ -12,6 +12,8 @@
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8888
 #define BUFFER_SIZE 1024
+#define HAS_PREFIX(text, prefix) (strncmp((text), (prefix), strlen(prefix)) == 0)
+#define PREFIX_PAYLOAD(text, prefix) ((text) + strlen(prefix))
 
 int sockfd = -1;
 int current_user_id = -1;
@@ -137,8 +139,7 @@ void on_register_clicked(GtkButton *button, gpointer user_data) {
     memset(buffer, 0, BUFFER_SIZE);
     int bytes_read = recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
 
-    if (bytes_read > 0 &&
-        strncmp(buffer, "REGISTER_SUCCESS:", strlen("REGISTER_SUCCESS:")) == 0) {
+    if (bytes_read > 0 && HAS_PREFIX(buffer, "REGISTER_SUCCESS:")) {
         gtk_label_set_text(GTK_LABEL(status_label), "注册成功，请登录");
         gtk_entry_set_text(username_entry, "");
         gtk_entry_set_text(password_entry, "");
@@ -218,8 +219,9 @@ void on_login_clicked(GtkButton *button, gpointer user_data) {
     memset(buffer, 0, BUFFER_SIZE);
     recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
 
-    if (strncmp(buffer, "LOGIN_SUCCESS:", 14) == 0 &&
-        sscanf(buffer + 14, "%d:%49[^:]:%49[^\n]", &current_user_id, current_username, current_nickname) == 3) {
+    if (HAS_PREFIX(buffer, "LOGIN_SUCCESS:") &&
+        sscanf(PREFIX_PAYLOAD(buffer, "LOGIN_SUCCESS:"),
+               "%d:%49[^:]:%49[^\n]", &current_user_id, current_username, current_nickname) == 3) {
         gtk_label_set_text(GTK_LABEL(status_label), "登录成功");
 
         if (start_receive_thread() != 0) {
@@ -517,7 +519,7 @@ gboolean parse_friends_list(gpointer data) {
     GtkListStore *store = GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(friends_list)));
     gtk_list_store_clear(store);
 
-    const char *ptr = buffer + 14;
+    const char *ptr = PREFIX_PAYLOAD(buffer, "FRIENDS_LIST:");
     char friend_id[10], username[50], nickname[50];
 
     while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", friend_id, username, nickname) == 3) {
@@ -537,7 +539,7 @@ gboolean parse_groups_list(gpointer data) {
     GtkListStore *store = GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(groups_list)));
     gtk_list_store_clear(store);
 
-    const char *ptr = buffer + 12;
+    const char *ptr = PREFIX_PAYLOAD(buffer, "GROUPS_LIST:");
     char group_id[10], group_name[80], owner_nickname[50];
 
     while (sscanf(ptr, "%9[^:]:%79[^:]:%49[^;];", group_id, group_name, owner_nickname) == 3) {
@@ -557,7 +559,7 @@ gboolean parse_group_members_list(gpointer data) {
     GtkListStore *store = GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(members_list)));
     gtk_list_store_clear(store);
 
-    const char *ptr = buffer + 19;
+    const char *ptr = PREFIX_PAYLOAD(buffer, "GROUP_MEMBERS_LIST:");
     char member_id[10], username[50], nickname[50];
 
     while (sscanf(ptr, "%9[^:]:%49[^:]:%49[^;];", member_id, username, nickname) == 3) {
@@ -580,7 +582,7 @@ gboolean parse_messages_list(gpointer data) {
     GtkTextIter iter;
     gtk_text_buffer_get_end_iter(text_buffer, &iter);
 
-    const char *ptr = buffer + 15;
+    const char *ptr = PREFIX_PAYLOAD(buffer, "MESSAGES_LIST:");
     char content[BUFFER_SIZE], timestamp[50], nickname[50];
 
     while (sscanf(ptr, "%1023[^:]:%49[^:]:%49[^;];", content, timestamp, nickname) == 3) {
@@ -607,7 +609,7 @@ gboolean parse_group_messages_list(gpointer data) {
     GtkTextIter iter;
     gtk_text_buffer_get_end_iter(text_buffer, &iter);
 
-    const char *ptr = buffer + 20;
+    const char *ptr = PREFIX_PAYLOAD(buffer, "GROUP_MESSAGES_LIST:");
     char content[BUFFER_SIZE], timestamp[50], nickname[50];
 
     while (sscanf(ptr, "%1023[^:]:%49[^:]:%49[^;];", content, timestamp, nickname) == 3) {
@@ -631,7 +633,8 @@ gboolean parse_new_message(gpointer data) {
     int sender_id;
     char sender_nickname[50], content[BUFFER_SIZE];
 
-    if (sscanf(buffer + 12, "%d:%49[^:]:%1023[^\n]", &sender_id, sender_nickname, content) == 3) {
+    if (sscanf(PREFIX_PAYLOAD(buffer, "NEW_MESSAGE:"),
+               "%d:%49[^:]:%1023[^\n]", &sender_id, sender_nickname, content) == 3) {
         if (sender_id == selected_friend_id || sender_id == current_user_id) {
             GtkTextBuffer *text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view));
             GtkTextIter iter;
@@ -660,7 +663,7 @@ gboolean parse_new_group_message(gpointer data) {
     int group_id, sender_id;
     char sender_nickname[50], content[BUFFER_SIZE];
 
-    if (sscanf(buffer + 18, "%d:%d:%49[^:]:%1023[^\n]",
+    if (sscanf(PREFIX_PAYLOAD(buffer, "NEW_GROUP_MESSAGE:"), "%d:%d:%49[^:]:%1023[^\n]",
                &group_id, &sender_id, sender_nickname, content) == 4) {
         if (selected_is_group && group_id == selected_group_id) {
             GtkTextBuffer *text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(message_view));
@@ -696,12 +699,12 @@ gboolean parse_friend_status(gpointer data) {
     char nickname[50];
     char notice[120];
 
-    if (strncmp(buffer, "FRIEND_ONLINE:", 14) == 0 &&
-        sscanf(buffer + 14, "%d:%49[^\n]", &user_id, nickname) == 2) {
+    if (HAS_PREFIX(buffer, "FRIEND_ONLINE:") &&
+        sscanf(PREFIX_PAYLOAD(buffer, "FRIEND_ONLINE:"), "%d:%49[^\n]", &user_id, nickname) == 2) {
         snprintf(notice, sizeof(notice), "%s 已上线", nickname);
         gtk_label_set_text(GTK_LABEL(status_label), notice);
-    } else if (strncmp(buffer, "FRIEND_OFFLINE:", 15) == 0 &&
-               sscanf(buffer + 15, "%d:%49[^\n]", &user_id, nickname) == 2) {
+    } else if (HAS_PREFIX(buffer, "FRIEND_OFFLINE:") &&
+               sscanf(PREFIX_PAYLOAD(buffer, "FRIEND_OFFLINE:"), "%d:%49[^\n]", &user_id, nickname) == 2) {
         snprintf(notice, sizeof(notice), "%s 已离线", nickname);
         gtk_label_set_text(GTK_LABEL(status_label), notice);
     }
@@ -713,7 +716,7 @@ gboolean parse_friend_status(gpointer data) {
 
 gboolean parse_offline_messages(gpointer data) {
     char *buffer = (char *)data;
-    const char *ptr = buffer + 22;
+    const char *ptr = PREFIX_PAYLOAD(buffer, "OFFLINE_MESSAGES_LIST:");
     char type[16], related_id[16], count[16];
     int total = 0;
     char notice[160] = "没有未读消息";
@@ -740,6 +743,7 @@ gboolean refresh_friends_after_add(gpointer data) {
         snprintf(msg, sizeof(msg), "FRIENDS:%d", current_user_id);
         send_message_to_server(msg);
     }
+    gtk_label_set_text(GTK_LABEL(status_label), "好友列表已更新");
 
     return G_SOURCE_REMOVE;
 }
@@ -767,6 +771,14 @@ gboolean show_block_status(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+gboolean show_status_message(gpointer data) {
+    char *message = (char *)data;
+
+    gtk_label_set_text(GTK_LABEL(status_label), message);
+    g_free(message);
+    return G_SOURCE_REMOVE;
+}
+
 void *receive_messages(void *arg) {
     (void)arg;
     char buffer[BUFFER_SIZE];
@@ -782,43 +794,49 @@ void *receive_messages(void *arg) {
 
         printf("收到消息: %s\n", buffer);
 
-        if (strncmp(buffer, "FRIENDS_LIST:", 14) == 0) {
+        if (HAS_PREFIX(buffer, "FRIENDS_LIST:")) {
             gdk_threads_add_idle(parse_friends_list, g_strdup(buffer));
             if (current_user_id > 0) {
                 char msg[BUFFER_SIZE];
                 snprintf(msg, sizeof(msg), "GROUPS:%d", current_user_id);
                 send_message_to_server(msg);
             }
-        } else if (strncmp(buffer, "GROUPS_LIST:", 12) == 0) {
+        } else if (HAS_PREFIX(buffer, "GROUPS_LIST:")) {
             gdk_threads_add_idle(parse_groups_list, g_strdup(buffer));
             if (current_user_id > 0) {
                 char msg[BUFFER_SIZE];
                 snprintf(msg, sizeof(msg), "OFFLINE_MESSAGES:%d", current_user_id);
                 send_message_to_server(msg);
             }
-        } else if (strncmp(buffer, "GROUP_MEMBERS_LIST:", 19) == 0) {
+        } else if (HAS_PREFIX(buffer, "GROUP_MEMBERS_LIST:")) {
             gdk_threads_add_idle(parse_group_members_list, g_strdup(buffer));
-        } else if (strncmp(buffer, "MESSAGES_LIST:", 15) == 0) {
+        } else if (HAS_PREFIX(buffer, "MESSAGES_LIST:")) {
             gdk_threads_add_idle(parse_messages_list, g_strdup(buffer));
-        } else if (strncmp(buffer, "GROUP_MESSAGES_LIST:", 20) == 0) {
+        } else if (HAS_PREFIX(buffer, "GROUP_MESSAGES_LIST:")) {
             gdk_threads_add_idle(parse_group_messages_list, g_strdup(buffer));
-        } else if (strncmp(buffer, "NEW_MESSAGE:", 12) == 0) {
+        } else if (HAS_PREFIX(buffer, "NEW_MESSAGE:")) {
             gdk_threads_add_idle(parse_new_message, g_strdup(buffer));
-        } else if (strncmp(buffer, "NEW_GROUP_MESSAGE:", 18) == 0) {
+        } else if (HAS_PREFIX(buffer, "NEW_GROUP_MESSAGE:")) {
             gdk_threads_add_idle(parse_new_group_message, g_strdup(buffer));
-        } else if (strncmp(buffer, "ADDFRIEND_SUCCESS", 17) == 0) {
+        } else if (HAS_PREFIX(buffer, "ADDFRIEND_SUCCESS")) {
             gdk_threads_add_idle(refresh_friends_after_add, NULL);
-        } else if (strncmp(buffer, "CREATE_GROUP_SUCCESS", 20) == 0 ||
-                   strncmp(buffer, "ADD_GROUP_MEMBER_SUCCESS", 24) == 0) {
+        } else if (HAS_PREFIX(buffer, "ADDFRIEND_FAILED")) {
+            gdk_threads_add_idle(show_status_message, g_strdup("添加好友失败，请确认用户名是否存在"));
+        } else if (HAS_PREFIX(buffer, "CREATE_GROUP_SUCCESS") ||
+                   HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_SUCCESS")) {
             gdk_threads_add_idle(refresh_groups_after_change, NULL);
-        } else if (strncmp(buffer, "BLOCK_USER_SUCCESS", 18) == 0) {
+        } else if (HAS_PREFIX(buffer, "CREATE_GROUP_FAILED")) {
+            gdk_threads_add_idle(show_status_message, g_strdup("创建群聊失败，请检查群名和成员ID"));
+        } else if (HAS_PREFIX(buffer, "ADD_GROUP_MEMBER_FAILED")) {
+            gdk_threads_add_idle(show_status_message, g_strdup("添加群成员失败，请确认用户名和权限"));
+        } else if (HAS_PREFIX(buffer, "BLOCK_USER_SUCCESS")) {
             gdk_threads_add_idle(show_block_status, NULL);
-        } else if (strncmp(buffer, "UNBLOCK_USER_SUCCESS", 20) == 0) {
+        } else if (HAS_PREFIX(buffer, "UNBLOCK_USER_SUCCESS")) {
             gdk_threads_add_idle(show_block_status, NULL);
-        } else if (strncmp(buffer, "FRIEND_ONLINE:", 14) == 0 ||
-                   strncmp(buffer, "FRIEND_OFFLINE:", 15) == 0) {
+        } else if (HAS_PREFIX(buffer, "FRIEND_ONLINE:") ||
+                   HAS_PREFIX(buffer, "FRIEND_OFFLINE:")) {
             gdk_threads_add_idle(parse_friend_status, g_strdup(buffer));
-        } else if (strncmp(buffer, "OFFLINE_MESSAGES_LIST:", 22) == 0) {
+        } else if (HAS_PREFIX(buffer, "OFFLINE_MESSAGES_LIST:")) {
             gdk_threads_add_idle(parse_offline_messages, g_strdup(buffer));
         }
     }

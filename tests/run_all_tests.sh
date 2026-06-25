@@ -62,6 +62,16 @@ assert_not_contains() {
     fi
 }
 
+assert_not_matches() {
+    local file="$1"
+    local pattern="$2"
+
+    if grep -Eq "$pattern" "$file"; then
+        printf 'Unexpected regex pattern found in %s:\n%s\n' "$file" "$pattern" >&2
+        exit 1
+    fi
+}
+
 compile_mysql_test() {
     local source_file="$1"
     local output_file="$2"
@@ -172,7 +182,10 @@ assert_contains "$CLIENT_SOURCE" "UNBLOCK_USER_USERNAME:%s"
 assert_contains "$CLIENT_SOURCE" "请输入好友用户名"
 assert_contains "$CLIENT_SOURCE" "请输入成员用户名"
 assert_contains "$CLIENT_SOURCE" "请输入用户名"
-assert_contains "$CLIENT_SOURCE" "strncmp(buffer, \"REGISTER_SUCCESS:\", strlen(\"REGISTER_SUCCESS:\"))"
+assert_contains "$CLIENT_SOURCE" "#define HAS_PREFIX(text, prefix)"
+assert_contains "$CLIENT_SOURCE" "#define PREFIX_PAYLOAD(text, prefix)"
+assert_contains "$CLIENT_SOURCE" "HAS_PREFIX(buffer, \"REGISTER_SUCCESS:\")"
+assert_contains "$CLIENT_SOURCE" "PREFIX_PAYLOAD(buffer, \"FRIENDS_LIST:\")"
 assert_contains "$CLIENT_SOURCE" "REGISTER_FAILED_DUPLICATE_USERNAME"
 assert_contains "$CLIENT_SOURCE" "REGISTER_FAILED_INVALID_INPUT"
 assert_contains "$CLIENT_SOURCE" "gtk_entry_set_text(username_entry, \"\")"
@@ -184,6 +197,8 @@ assert_contains "$CLIENT_SOURCE" "%d:%49[^:]:%1023[^\\n]"
 assert_contains "$CLIENT_SOURCE" "is_client_protocol_safe"
 assert_contains "$CLIENT_SOURCE" "%d:%49[^:]:%49[^\\n]"
 assert_not_contains "$CLIENT_SOURCE" "strncmp(buffer, \"REGISTER_SUCCESS:\", 18)"
+assert_not_matches "$CLIENT_SOURCE" "buffer[[:space:]]*\\+[[:space:]]*[0-9]+"
+assert_not_matches "$CLIENT_SOURCE" "strncmp\\(buffer,[[:space:]]*\"[^\"]+\",[[:space:]]*[0-9]+\\)"
 assert_not_contains "$CLIENT_SOURCE" "请输入好友ID"
 assert_not_contains "$CLIENT_SOURCE" "请输入成员ID"
 assert_not_contains "$CLIENT_SOURCE" "请输入用户ID"
@@ -229,6 +244,10 @@ assert_contains "$SERVER_SOURCE" "add_group_member_by_username(client->user_id, 
 assert_contains "$SERVER_SOURCE" "block_user_by_username(client->user_id, blocked_username)"
 assert_contains "$SERVER_SOURCE" "unblock_user_by_username(client->user_id, blocked_username)"
 assert_contains "$SERVER_SOURCE" "mysql_stmt_prepare(stmt, statement, strlen(statement))"
+assert_contains "$SERVER_SOURCE" "#define HAS_PREFIX(text, prefix)"
+assert_contains "$SERVER_SOURCE" "#define PREFIX_PAYLOAD(text, prefix)"
+assert_contains "$SERVER_SOURCE" "HAS_PREFIX(buffer, \"ADDFRIEND_USERNAME:\")"
+assert_contains "$SERVER_SOURCE" "PREFIX_PAYLOAD(buffer, \"ADDFRIEND_USERNAME:\")"
 assert_contains "$SERVER_SOURCE" "is_protocol_safe_text(content, 1)"
 assert_contains "$SERVER_SOURCE" "add_friend(client->user_id, friend_id)"
 assert_contains "$SERVER_SOURCE" "get_friends(client->user_id, friends, sizeof(friends))"
@@ -236,6 +255,8 @@ assert_contains "$SERVER_SOURCE" "get_messages(client->user_id, friend_id, messa
 assert_contains "$SERVER_SOURCE" "can_send_private_message(sender_id, receiver_id)"
 assert_contains "$SERVER_SOURCE" "is_group_member(sender_id, group_id)"
 assert_not_contains "$SERVER_SOURCE" "char messages[BUFFER_SIZE * 10]"
+assert_not_matches "$SERVER_SOURCE" "buffer[[:space:]]*\\+[[:space:]]*[0-9]+"
+assert_not_matches "$SERVER_SOURCE" "strncmp\\(buffer,[[:space:]]*\"[^\"]+\",[[:space:]]*[0-9]+\\)"
 assert_not_contains "$SERVER_SOURCE" "sprintf("
 assert_not_contains "$SERVER_SOURCE" "strcat("
 assert_not_contains "$SERVER_SOURCE" "strcpy("
