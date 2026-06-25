@@ -2042,6 +2042,16 @@ void *handle_client(void *arg) {
                 printf("忽略客户端声明的发送者ID: %d，使用登录会话ID: %d\n",
                        requested_sender_id, sender_id);
             }
+            if (!are_friends(sender_id, receiver_id)) {
+                snprintf(response, sizeof(response), "SEND_FAILED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
+            if (has_block_between(sender_id, receiver_id)) {
+                snprintf(response, sizeof(response), "SEND_FAILED_BLOCKED");
+                send(client->sockfd, response, strlen(response), 0);
+                continue;
+            }
             if (!can_send_private_message(sender_id, receiver_id) ||
                 save_message(sender_id, receiver_id, content, timestamp, sizeof(timestamp)) != 0) {
                 snprintf(response, sizeof(response), "SEND_FAILED");
